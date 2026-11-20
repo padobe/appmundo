@@ -1,7 +1,7 @@
 // Recorta los focos de calor de NASA FIRMS (VIIRS NOAA-20 y NOAA-21, últimos 7 días, ficheros
 // públicos sin clave) a la zona de cada incendio activo de GDACS y lo guarda en data/fires/<evento>.json
 // (un fichero pequeño por evento: la web solo descarga el del incendio que se abre).
-// Lo ejecuta la GitHub Action .github/workflows/fires.yml cada 3 h; también a mano:
+// Lo ejecuta la GitHub Action .github/workflows/fires.yml cada 6 h; también a mano:
 //   node scripts/update-fires.mjs
 import { writeFile, mkdir, rm } from 'node:fs/promises';
 import { loadEventList } from '../js/events/gdacs.js';

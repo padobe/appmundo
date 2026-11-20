@@ -180,7 +180,7 @@ export function fireModule(base) {
         if (f.truncated) notes.push(`Se dibujan los ${dets.length.toLocaleString('es-ES')} focos más recientes de ${f.total.toLocaleString('es-ES')}.`);
         if (Date.now() - f.generated > 12 * HOUR) data.errors.push('Los focos de calor tienen más de 12 h: la actualización automática no se ha ejecutado.');
       } else if (f && !f.known) {
-        rows.push(['Focos', '<small>Sin focos VIIRS en los últimos 7 días dentro de la zona, o evento nuevo aún sin recortar (se actualiza cada ~3 h)</small>']);
+        rows.push(['Focos', '<small>Sin focos VIIRS en los últimos 7 días dentro de la zona, o evento nuevo aún sin recortar (se actualiza cada ~6 h)</small>']);
       } else if (f) {
         rows.push(['Focos', '<small>FIRMS no detectó focos en los últimos 7 días dentro de la zona</small>']);
       } else {

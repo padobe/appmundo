@@ -2,7 +2,7 @@ name: Actualizar focos de calor
 
 on:
   schedule:
-    - cron: '17 */3 * * *'
+    - cron: '17 */6 * * *'
   workflow_dispatch:
 
 permissions:
