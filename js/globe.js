@@ -24,7 +24,8 @@ export const SHADE_PARS = /* glsl */ `
   uniform sampler2D waterMap;
   uniform vec3 sunDir;
 
-  vec3 shadeEarth(vec3 day, vec2 nightUv, vec3 N, vec3 V) {
+  // N: normal de la esfera (día/noche, agua); Nt: normal del relieve (sombreado de montañas)
+  vec3 shadeEarthT(vec3 day, vec2 nightUv, vec3 N, vec3 Nt, vec3 V) {
     float cosSun = dot(N, sunDir);
     // Mezcla día/noche: transición ancha (crepúsculo civil + náutico ≈ 12°)
     float dayMix = smoothstep(-0.16, 0.20, cosSun);
@@ -32,7 +33,7 @@ export const SHADE_PARS = /* glsl */ `
     float water = texture2D(waterMap, nightUv).r;
 
     // Cara diurna: lambert suavizado
-    float light = clamp(cosSun, 0.0, 1.0);
+    float light = clamp(dot(Nt, sunDir), 0.0, 1.0);
     vec3 dayCol = day * (0.10 + 1.15 * pow(light, 0.75));
 
     // Destello del sol en el agua
@@ -58,6 +59,7 @@ export const SHADE_PARS = /* glsl */ `
     float litRim = smoothstep(-0.25, 0.45, cosSun);
     return mix(col, vec3(0.32, 0.58, 1.0), fres * (0.06 + 0.62 * litRim));
   }
+  vec3 shadeEarth(vec3 day, vec2 nightUv, vec3 N, vec3 V) { return shadeEarthT(day, nightUv, N, N, V); }
 `;
 
 const earthFragment = /* glsl */ `
@@ -149,13 +151,6 @@ export function createEarth({ scene, renderer, manager, isMobile, onTextureError
   load('earth-water.png', 'waterMap', {
     srgb: false,
     onLoad: (t) => { waterSampler = makeSampler(t.image); },
-  });
-  load('night-sky.png', null, {
-    onLoad: (t) => {
-      t.mapping = THREE.EquirectangularReflectionMapping;
-      scene.background = t;
-      scene.backgroundIntensity = 0.5;
-    },
   });
 
   const seg = isMobile ? [96, 64] : [160, 100];

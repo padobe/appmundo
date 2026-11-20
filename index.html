@@ -53,46 +53,135 @@
   </section>
 
   <div class="side">
-    <button id="btn-follow" class="btn" aria-pressed="false" type="button">
-      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.5 3"/></svg>
-      <span class="btn-text">Seguir a la ISS</span>
-    </button>
+    <form id="search-form" class="search" role="search" autocomplete="off">
+      <svg viewBox="0 0 20 20" width="15" height="15" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13 13l4.5 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <input id="search-input" type="search" placeholder="Busca una calle, ciudad o zona" aria-label="Buscar un lugar" enterkeyhint="search">
+      <ul id="search-results" class="search-results" hidden></ul>
+    </form>
+
+    <div class="btn-row">
+      <button id="btn-tour" class="btn btn-tour" type="button">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></svg>
+        <span>Tour</span>
+      </button>
+      <button id="btn-follow" class="btn" aria-pressed="false" type="button">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.5 3"/></svg>
+        <span class="btn-text">Seguir a la ISS</span>
+      </button>
+    </div>
 
     <details class="layers" open>
       <summary>Capas</summary>
       <div class="layers-body">
-        <label class="layer-row">
-          <input type="checkbox" data-layer="quakes" checked>
-          <span class="switch" aria-hidden="true"></span>
-          <span class="layer-name">Terremotos</span>
-        </label>
-        <ul class="mag-scale" aria-label="Magnitud">
-          <li><span style="--c:#4fd1c5;--s:6px"></span>&lt; 2.5</li>
-          <li><span style="--c:#f6d860;--s:8px"></span>2.5–4.5</li>
-          <li><span style="--c:#ff8a3d;--s:11px"></span>4.5–6</li>
-          <li><span style="--c:#ff3d6e;--s:14px"></span>≥ 6</li>
-        </ul>
-        <label class="layer-row">
-          <input type="checkbox" data-layer="iss" checked>
-          <span class="switch" aria-hidden="true"></span>
-          <span class="layer-name">Estación Espacial</span>
-          <span class="layer-meta">estela 30 min</span>
-        </label>
-        <label class="layer-row">
-          <input type="checkbox" data-layer="clouds" checked>
-          <span class="switch" aria-hidden="true"></span>
-          <span class="layer-name">Nubes</span>
-          <span class="layer-meta">cada 3 h</span>
-        </label>
-        <label class="layer-row">
-          <input type="checkbox" data-layer="labels" checked>
-          <span class="switch" aria-hidden="true"></span>
-          <span class="layer-name">Nombres al acercarse</span>
-        </label>
-        <p class="layers-credits">Datos: USGS · wheretheiss.at · live-cloud-maps · Imágenes: NASA, Esri, Maxar, Earthstar Geographics</p>
-        <p class="layers-hint">Rueda, pellizco o doble clic para acercarte hasta ver el terreno con imágenes de satélite.</p>
+        <div class="layer-group">
+          <div class="group-title">En directo</div>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="quakes" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Terremotos</span>
+            <span class="layer-meta">24 h</span>
+          </label>
+          <ul class="mag-scale" aria-label="Magnitud">
+            <li><span style="--c:#4fd1c5;--s:6px"></span>&lt; 2.5</li>
+            <li><span style="--c:#f6d860;--s:8px"></span>2.5–4.5</li>
+            <li><span style="--c:#ff8a3d;--s:11px"></span>4.5–6</li>
+            <li><span style="--c:#ff3d6e;--s:14px"></span>≥ 6</li>
+          </ul>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="iss" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Estación Espacial</span>
+            <span class="layer-meta">estela 30 min</span>
+          </label>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="sats" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Satélites</span>
+          </label>
+          <div class="chips">
+            <label class="chip"><input type="checkbox" data-layer="sat-visual" checked><span style="--c:#ffffff">Brillantes</span></label>
+            <label class="chip"><input type="checkbox" data-layer="sat-gnss" checked><span style="--c:#8affc1">GPS</span></label>
+            <label class="chip"><input type="checkbox" data-layer="sat-geo" checked><span style="--c:#ffc46b">Geoestacionarios</span></label>
+            <label class="chip"><input type="checkbox" data-layer="sat-starlink"><span style="--c:#9ec9ff">Starlink</span></label>
+          </div>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="eonet" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Desastres activos</span>
+            <span class="layer-meta">NASA</span>
+          </label>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="aurora" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Auroras</span>
+            <span class="layer-meta">NOAA</span>
+          </label>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="clouds" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Nubes</span>
+            <span class="layer-meta">cada 3 h</span>
+          </label>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="wind">
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Viento</span>
+            <span class="layer-meta">partículas</span>
+          </label>
+        </div>
+        <div class="layer-group">
+          <div class="group-title">Cielo</div>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="constellations" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Constelaciones</span>
+          </label>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="moon" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Luna</span>
+            <span class="layer-meta">fase real</span>
+          </label>
+        </div>
+        <div class="layer-group">
+          <div class="group-title">Mapa</div>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="terrain" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Relieve 3D</span>
+            <span class="layer-meta">al acercarse</span>
+          </label>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="labels" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Nombres de lugares</span>
+          </label>
+        </div>
+        <p class="layers-credits">Datos: USGS · wheretheiss.at · CelesTrak · NASA EONET · NOAA SWPC · Open-Meteo · live-cloud-maps · Photon/OSM · Imágenes: NASA, Esri, Maxar, Earthstar Geographics · Relieve: AWS Terrain Tiles</p>
+        <p class="layers-hint">Rueda, pellizco o doble clic para acercarte. Clic derecho (o Ctrl) y arrastrar para inclinar la vista; en el móvil, dos dedos arriba o abajo.</p>
       </div>
     </details>
+  </div>
+
+  <aside id="place-card" class="place-card" aria-live="polite">
+    <div class="pl-head">
+      <div>
+        <div class="pl-kicker">Desde aquí</div>
+        <div class="pl-name" id="place-name"></div>
+        <div class="pl-rest" id="place-rest"></div>
+      </div>
+      <button id="place-close" class="pl-close" type="button" aria-label="Cerrar">×</button>
+    </div>
+    <div id="place-body" class="pl-body"></div>
+    <button id="place-3d" class="btn pl-3d" type="button">Ver en 3D desde cerca</button>
+  </aside>
+
+  <div id="tour-caption" class="tour-caption" aria-live="polite">
+    <div class="tour-dots" id="tour-dots"></div>
+    <div class="tour-kicker" id="tour-kicker"></div>
+    <div class="tour-title" id="tour-title"></div>
+    <div class="tour-text" id="tour-text"></div>
+    <button id="tour-exit" class="tour-exit" type="button">Salir del tour</button>
   </div>
 
   <div class="timeline" role="group" aria-label="Línea de tiempo">
@@ -110,7 +199,7 @@
 
   <footer class="credits">
     <span class="sources" id="sources"></span>
-    <span class="credit-text">Datos: <a href="https://earthquake.usgs.gov/" target="_blank" rel="noopener">USGS</a> · <a href="https://wheretheiss.at/" target="_blank" rel="noopener">wheretheiss.at</a> · Nubes: <a href="https://github.com/matteason/live-cloud-maps" target="_blank" rel="noopener">live-cloud-maps</a> · Imágenes: <a href="https://visibleearth.nasa.gov/" target="_blank" rel="noopener">NASA</a>, <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a>, Maxar, Earthstar Geographics</span>
+    <span class="credit-text">Datos: <a href="https://earthquake.usgs.gov/" target="_blank" rel="noopener">USGS</a> · <a href="https://wheretheiss.at/" target="_blank" rel="noopener">wheretheiss.at</a> · <a href="https://celestrak.org/" target="_blank" rel="noopener">CelesTrak</a> · <a href="https://eonet.gsfc.nasa.gov/" target="_blank" rel="noopener">NASA EONET</a> · <a href="https://www.swpc.noaa.gov/" target="_blank" rel="noopener">NOAA</a> · <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · <a href="https://github.com/matteason/live-cloud-maps" target="_blank" rel="noopener">live-cloud-maps</a> · <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a> · Imágenes: NASA, <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a>, Maxar · Relieve: AWS Terrain Tiles</span>
   </footer>
 
   <div id="iss-label" class="iss-label hidden" aria-hidden="true"><span>ISS</span></div>

@@ -24,13 +24,13 @@ const fragment = /* glsl */ `
   varying vec3 vNormalW;
   void main() {
     float c = texture2D(map, vUv).r;
-    float a = smoothstep(0.12, 0.9, c) * 0.85 * uFade;
+    float a = smoothstep(0.2, 0.9, c) * 0.85 * uFade;
     if (a < 0.01) discard;
     float s = dot(normalize(vNormalW), sunDir);
     float lit = smoothstep(-0.12, 0.30, s);
     vec3 dayCol = vec3(0.96, 0.97, 1.0) * (0.22 + 0.58 * clamp(s, 0.0, 1.0));
     vec3 col = mix(vec3(0.012, 0.018, 0.03), dayCol, lit);
-    col = mix(col, vec3(1.0, 0.55, 0.3), exp(-pow(s / 0.08, 2.0)) * 0.35);  // nubes rosadas al atardecer
+    col = mix(col, vec3(1.0, 0.55, 0.3), exp(-pow(s / 0.045, 2.0)) * 0.14 * smoothstep(0.45, 0.85, c));  // solo las nubes densas se tiñen al atardecer
     gl_FragColor = vec4(col, a * mix(0.55, 1.0, lit));
     #include <colorspace_fragment>
   }
