@@ -92,7 +92,7 @@ export const SHADE_PARS = /* glsl */ `
     if (gNight.a > 0.5) {
       // Luces de las teselas (Black Marble): respuesta casi lineal, ámbar con el núcleo algo más claro, como una foto nocturna de satélite
       float l = night.r;
-      lights = mix(vec3(1.0, 0.62, 0.30), vec3(1.0, 0.86, 0.66), smoothstep(0.5, 1.0, l)) * pow(l, 1.7) * 1.15;
+      lights = mix(vec3(1.0, 0.62, 0.30), vec3(1.0, 0.86, 0.66), smoothstep(0.5, 1.0, l)) * pow(l, 2.0) * 0.6;
     }
     vec3 nightCol = night * 0.03 + day * 0.004 + vec3(0.001, 0.003, 0.009) + lights;
 
