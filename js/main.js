@@ -268,7 +268,7 @@ async function openEvent(evt) {
   try {
     if (!eventView) {
       const m = await import('./events/view.js');
-      eventView = new m.EventView(ctx, { rig, homeH: HOME_H, layer: gdacs });
+      eventView = new m.EventView(ctx, { rig, homeH: HOME_H, layer: gdacs, env: { clouds, photo } });
     }
     await eventView.open(evt);
   } catch (e) {

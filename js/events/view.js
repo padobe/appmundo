@@ -31,7 +31,8 @@ export function eventWindow(evt, now = Date.now()) {
 }
 
 export class EventView {
-  constructor(ctx, { rig, homeH, layer }) {
+  constructor(ctx, { rig, homeH, layer, env }) {
+    this.env = env; // { clouds, photo }: se apagan en modo evento (tapan el terreno) y se pueden volver a encender
     this.ctx = ctx;
     this.rig = rig;
     this.homeH = homeH;
@@ -58,6 +59,11 @@ export class EventView {
     this.bindBack();
     document.body.classList.add('event-mode');
     this.ctx.tiles.lift.value = 1;
+    if (this.env && !this.envSaved) {
+      this.envSaved = { clouds: this.env.clouds.visible, photo: this.env.photo.visible };
+      this.env.clouds.setVisible(false);
+      this.env.photo.setVisible(false);
+    }
     this.ctx.fogScale = 0.25; // menos bruma: la imagen se ve nítida y con relieve
 
     this.travel(evt);
@@ -191,8 +197,9 @@ export class EventView {
     const stats = (panel.stats || []).length
       ? `<div class="ev-stats">${panel.stats.map(([v, l]) => `<div><b>${escapeHtml(v)}</b><span>${escapeHtml(l)}</span></div>`).join('')}</div>` : '';
     const labels = [...new Set(this.layers.map((l) => l.label).filter(Boolean))];
-    const toggles = labels.length
-      ? `<div class="ev-layers"><div class="ev-sec">Capas</div>${labels.map((l) => `<label class="ev-tog"><input type="checkbox" data-ev-layer="${escapeHtml(l)}" checked><span class="switch" aria-hidden="true"></span>${escapeHtml(l)}</label>`).join('')}</div>` : '';
+    const clouds = this.env ? '<label class="ev-tog"><input type="checkbox" data-ev-env><span class="switch" aria-hidden="true"></span>Nubes (tapan el terreno)</label>' : '';
+    const toggles = labels.length || clouds
+      ? `<div class="ev-layers"><div class="ev-sec">Capas</div>${labels.map((l) => `<label class="ev-tog"><input type="checkbox" data-ev-layer="${escapeHtml(l)}" checked><span class="switch" aria-hidden="true"></span>${escapeHtml(l)}</label>`).join('')}${clouds}</div>` : '';
     const body = `${stats}<div class="pl-body">${rows.join('')}</div>${toggles}${errs}${chart}<ul class="ev-notes">${notes}<li>La reproducción usa la hora del evento y mueve también el sol y las nubes.</li></ul>
       <div class="ev-actions">${retry}${evt.reportUrl ? `<a class="btn" href="${escapeHtml(evt.reportUrl)}" target="_blank" rel="noopener">Informe GDACS ↗</a>` : ''}</div>`;
     $('detail-body').innerHTML = this.shell(evt, body);
@@ -204,6 +211,10 @@ export class EventView {
         this.refresh(true);
       });
     }
+    $('detail-body').querySelector('[data-ev-env]')?.addEventListener('change', (e) => {
+      this.env.clouds.setVisible(e.target.checked);
+      this.env.photo.setVisible(e.target.checked);
+    });
     const lg = $('ev-legend');
     if (lg) {
       lg.innerHTML = '<div class="ev-sec">Leyenda</div>' + (panel.legend || []).map(([c, t]) => `<div class="ev-lg"><i style="background:${escapeHtml(c)}"></i>${escapeHtml(t)}</div>`).join('');
@@ -263,6 +274,11 @@ export class EventView {
     this.ctx.tiles?.setDecal(null);
     this.ctx.fogScale = 1;
     if (this.ctx.tiles) this.ctx.tiles.lift.value = 0;
+    if (this.envSaved) {
+      this.env.clouds.setVisible(this.envSaved.clouds);
+      this.env.photo.setVisible(this.envSaved.photo);
+      this.envSaved = null;
+    }
     document.body.classList.remove('event-mode');
     const lg = $('ev-legend');
     if (lg) lg.hidden = true;
