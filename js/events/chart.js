@@ -68,6 +68,12 @@ export class EventChart {
     g.textAlign = 'right'; g.fillText(fmtDay.format(t1), w - r, h - 4);
 
     for (const s of this.series) {
+      if (s.bars) {
+        const bw = Math.max(2, ((w - l - r) * 86400000 * 0.7) / (t1 - t0 || 1));
+        g.fillStyle = s.color;
+        for (const p of s.points) g.fillRect(X(p.t) - bw / 2, Y(p.v), bw, Y(0) - Y(p.v));
+        continue;
+      }
       const pts = [...s.points].sort((a, b2) => a.t - b2.t);
       g.strokeStyle = s.color; g.lineWidth = 1.6;
       for (let i = 1; i < pts.length; i++) {

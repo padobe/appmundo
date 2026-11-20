@@ -117,7 +117,7 @@ export function decalBox(layers) {
 }
 
 /** Pinta las capas visibles en el lienzo (proyección lineal lon/lat sobre `box`). */
-export function paintDecal(canvas, box, layers) {
+export function paintDecal(canvas, box, layers, t = Date.now()) {
   const lonSpan = box.e - box.w, latSpan = box.n - box.s;
   const k = 2048 / Math.max(lonSpan, latSpan);
   const W = Math.max(64, Math.ceil(lonSpan * k)), H = Math.max(64, Math.ceil(latSpan * k));
@@ -126,7 +126,10 @@ export function paintDecal(canvas, box, layers) {
   g.clearRect(0, 0, W, H);
   const cx = (box.w + box.e) / 2;
   const lw = Math.max(2.5, W / 420);
+  const toX = (lon) => (lon + 360 * Math.round((cx - lon) / 360) - box.w) * k;
+  const toY = (lat) => (box.n - lat) * k;
   for (const l of layers) {
+    if (l.decal.custom) { l.decal.custom(g, { toX, toY, k }, t); continue; }
     const { polys, color, fill, line, dashed } = l.decal;
     g.beginPath();
     for (const p of polys) {

@@ -59,12 +59,7 @@ export class EventView {
     document.body.classList.add('event-mode');
     this.ctx.fogScale = 0.25; // menos bruma: la imagen se ve nítida y con relieve
 
-    const { start, end } = this.win;
-    time.travel({
-      start, end, speed: (end - start) / 30000, owner: 'gdacs', what: 'el evento', long: true,
-      label: TYPES[evt.type]?.label || 'Evento',
-      ticks: [fmtShort.format(start), 'a mitad', fmtShort.format(end)],
-    });
+    this.travel(evt);
 
     // Vuelo provisional mientras llegan los datos; se afina con el encuadre real
     let state = 'flying';
@@ -81,6 +76,12 @@ export class EventView {
       data = { errors: ['No se pudieron cargar los datos del evento.'], failed: true };
     }
     if (this.token !== my) return;
+
+    // Algunos módulos tienen su propia ventana temporal (p. ej. incendios: desde la primera detección)
+    try {
+      const w = mod.window?.(data, evt);
+      if (w && w.end > w.start) { this.win = w; this.travel(evt); }
+    } catch { /* se mantiene la ventana por defecto */ }
 
     this.group = new THREE.Group();
     try {
@@ -110,6 +111,15 @@ export class EventView {
       state = 'refit';
       this.rig.flyTo({ ...view, duration: 2.5 });
     }
+  }
+
+  travel(evt) {
+    const { start, end } = this.win;
+    this.ctx.time.travel({
+      start, end, speed: (end - start) / 30000, owner: 'gdacs', what: 'el evento', long: true,
+      label: TYPES[evt.type]?.label || 'Evento',
+      ticks: [fmtShort.format(start), 'a mitad', fmtShort.format(end)],
+    });
   }
 
   tiltFor(h) { return 1.05 * (1 - THREE.MathUtils.smoothstep(h, 0.03, 0.22)); }
@@ -171,7 +181,7 @@ export class EventView {
 
     const series = data.failed ? [] : (() => { try { return mod.series(data, evt) || []; } catch { return []; } })();
     const chart = series.length
-      ? `<div class="ev-chart-wrap"><div class="ev-chart-title">${escapeHtml(series[0].label)} <small>${escapeHtml(series[0].unit)} · línea de tiempo del evento</small></div><canvas id="ev-chart" class="ev-chart" role="img" aria-label="Gráfica de ${escapeHtml(series[0].label)}"></canvas><div class="ev-chart-note">Puntos rellenos: observado · huecos: previsión. Toca la gráfica para mover la línea de tiempo.</div></div>`
+      ? `<div class="ev-chart-wrap"><div class="ev-chart-title">${escapeHtml(series[0].label)} <small>${escapeHtml(series[0].unit)} · línea de tiempo del evento</small></div><canvas id="ev-chart" class="ev-chart" role="img" aria-label="Gráfica de ${escapeHtml(series[0].label)}"></canvas><div class="ev-chart-note">${escapeHtml(series[0].note || 'Puntos rellenos: observado · huecos: previsión. Toca la gráfica para mover la línea de tiempo.')}</div></div>`
       : '<p class="ev-nochart">Sin serie temporal pública para este evento.</p>';
 
     const errs = (data.errors || []).map((e) => `<p class="ev-warn">${escapeHtml(e)}</p>`).join('');
@@ -228,11 +238,11 @@ export class EventView {
     }
     if (this.decalMode) {
       const on = this.layers.filter((l) => l.decal && l.visible);
-      const key = on.map((l) => this.layers.indexOf(l)).join(',');
+      const key = on.map((l) => this.layers.indexOf(l) + ':' + (l.decal.stamp?.(t) ?? '')).join(',');
       if (key !== this.decalKey) {
         this.decalKey = key;
         this.decalCanvas ||= document.createElement('canvas');
-        paintDecal(this.decalCanvas, this.decalBox, on);
+        paintDecal(this.decalCanvas, this.decalBox, on, t);
         this.ctx.tiles.setDecal(this.decalCanvas, this.decalBox, true);
       }
     }

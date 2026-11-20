@@ -12,6 +12,7 @@ import { fetchJSON, escapeHtml } from '../net.js';
 import { ALERT, utc } from './gdacs.js';
 import { polygonsOf, bboxOf, areaLayer, pointObject } from './draw.js';
 import { latLonToVec3 } from '../geo.js';
+import { fireModule } from './fire.js';
 
 const DAY = 86400000;
 const row = (k, v) => [k, v];
@@ -223,5 +224,5 @@ const tcModule = {
   },
 };
 
-const MODULES = { TC: tcModule, EQ: genericModule('EQ'), FL: genericModule('FL'), WF: genericModule('WF'), VO: genericModule('VO'), DR: genericModule('DR') };
+const MODULES = { TC: tcModule, EQ: genericModule('EQ'), FL: genericModule('FL'), WF: fireModule(genericModule('WF')), VO: genericModule('VO'), DR: genericModule('DR') };
 export const getModule = (type) => MODULES[type] || genericModule(type);
