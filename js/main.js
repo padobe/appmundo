@@ -294,6 +294,7 @@ function startDeferred() {
   for (const l of [photo, clouds, aurora, eonet, gdacs, sats, wind]) l.start();
   ephem.loadAstronomy().catch(() => ui.toast('No se pudo cargar el cálculo de planetas y eclipses', 'warn', 'astro'));
 }
+let noCloudPrev = null;
 ui.bindToggles({
   quakes: (on) => quakes.setVisible(on),
   iss: (on) => iss.setVisible(on),
@@ -313,6 +314,21 @@ ui.bindToggles({
   moon: (on) => sky.setMoon(on),
   terrain: (on) => tiles.setTerrain(on),
   labels: (on) => tiles.setLabels(on),
+  // Atajo: apaga a la vez las nubes en directo y la foto de ayer (que lleva las nubes pintadas)
+  nocloud: (on) => {
+    const set = (id, v) => {
+      const i = document.querySelector(`[data-layer="${id}"]`);
+      if (i && i.checked !== v) { i.checked = v; i.dispatchEvent(new Event('change')); }
+    };
+    if (on) {
+      noCloudPrev = { clouds: document.querySelector('[data-layer="clouds"]')?.checked, photo: document.querySelector('[data-layer="photo"]')?.checked };
+      set('clouds', false); set('photo', false);
+    } else if (noCloudPrev) {
+      const both = !noCloudPrev.clouds && !noCloudPrev.photo; // ya estaban apagadas (sesión anterior): se vuelven a encender
+      set('clouds', both || noCloudPrev.clouds); set('photo', both || noCloudPrev.photo);
+      noCloudPrev = null;
+    }
+  },
 });
 ui.bindTimeline(time);
 time.onChange(() => {
