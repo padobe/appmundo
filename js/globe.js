@@ -20,6 +20,7 @@ const earthVertex = /* glsl */ `
 // Sombreado compartido por el globo base y las teselas de satélite.
 // day: color de día; nightUv: coordenadas equirectangulares para luces y máscara de agua.
 export const SHADE_PARS = /* glsl */ `
+  vec4 gNight = vec4(0.0);      // luces de alta resolución de la teselas (rgb, mezcla); las rellena el shader de teselas
   uniform sampler2D nightMap;
   uniform sampler2D waterMap;
   uniform sampler2D cloudMap;   // nubes en directo: proyectan sombra sobre el suelo
@@ -55,7 +56,7 @@ export const SHADE_PARS = /* glsl */ `
   vec3 shadeEarthT(vec3 day, vec2 nightUv, vec3 N, vec3 Nt, vec3 V) {
     float cosSun = dot(N, sunDir);
     float dayMix = smoothstep(-0.16, 0.20, cosSun);
-    vec3 night = texture2D(nightMap, nightUv).rgb;
+    vec3 night = mix(texture2D(nightMap, nightUv).rgb, gNight.rgb, gNight.a);
     float water = texture2D(waterMap, nightUv).r;
 
     // Sombra de las nubes (el eclipse se aplica al final, sobre el color ya sombreado)

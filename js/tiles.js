@@ -9,6 +9,10 @@ import { SHADE_PARS } from './globe.js';
 
 const IMAGERY = (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
 const LABELS = (z, x, y) => `https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`;
+// Luces nocturnas de alta resolución (NASA Black Marble, ~500 m/píxel, hasta el nivel 8)
+const NIGHT = (z, x, y) => `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_Black_Marble/default/2016-01-01/GoogleMapsCompatible_Level8/${z}/${y}/${x}.png`;
+const NIGHT_MAX_Z = 8;
+const NIGHT_MIN_Z = 6; // por debajo basta la textura global
 const TERRAIN = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
 
 const MIN_Z = 5; // por debajo basta la textura base (4096 px ≈ nivel 4)
@@ -76,6 +80,9 @@ const fragment = /* glsl */ `
   uniform sampler2D uDecal;  // zona de un evento pintada sobre el terreno (lon/lat lineal)
   uniform vec4 uDecalBox;    // x0, y0, x1, y1 en coordenadas geoUv
   uniform float uDecalOn;
+  uniform sampler2D nightTile;
+  uniform vec4 uNightXf;     // escala.xy, desplazamiento.zw: uv de la tesela → uv de la tesela de luces
+  uniform float uNightOn;
   uniform float uLift;       // luz mínima en el lado nocturno (modo evento)
   ${SHADE_PARS}
   varying vec2 vUv;
@@ -101,6 +108,7 @@ const fragment = /* glsl */ `
     // Las fotos de satélite ya traen la luz del día: se aclaran un poco para compensar el lambert
     vec2 iuv = vec2(vUv.x, mix(vUv.y, 1.0 - vUv.y, uFlip));
     vec3 day = texture2D(dayMap, iuv).rgb * 1.12;
+    if (uNightOn > 0.5) gNight = vec4(texture2D(nightTile, uNightXf.zw + iuv * uNightXf.xy).rgb, 1.0);
     vec3 col = shadeEarthT(day, vGeoUv, N, Nt, V);
     col = max(col, day * 0.4 * uLift); // de noche el terreno sigue viéndose, tenue
     vec4 lab = texture2D(labelMap, iuv);
@@ -156,6 +164,7 @@ const lat2tileY = (lat, z) => {
   return ((1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2) * 2 ** z;
 };
 
+const _nv = new THREE.Vector3();
 function toVec(lat, lon, out = new THREE.Vector3()) {
   const la = lat * D2R, phi = (lon + 180) * D2R;
   return out.set(-Math.cos(phi) * Math.cos(la), Math.sin(la), Math.sin(phi) * Math.cos(la));
@@ -338,6 +347,8 @@ export class SatelliteTiles {
         if (this.terrainOn) this.attachElevation(t);
         // Nombres: solo para teselas definitivas que llevan un momento a la vista
         if (this.labels.value && t.z <= 15 && !t.labelsRequested && t.leafAt && now - t.leafAt > 400) this.loadLabels(t);
+        // Luces de ciudades nítidas: solo en teselas que están de noche
+        if (t.mesh && !t.nightRequested && t.z >= NIGHT_MIN_Z && this.shared.sunDir.value.dot(_nv.copy(t.mesh.position).normalize()) < 0.3) this.loadNight(t);
       } else {
         t.leafAt = 0;
       }
@@ -449,6 +460,9 @@ export class SatelliteTiles {
       uniforms: {
         dayMap: { value: tex },
         labelMap: { value: EMPTY },
+        nightTile: { value: EMPTY },
+        uNightXf: { value: new THREE.Vector4(1, 1, 0, 0) },
+        uNightOn: { value: 0 },
         elevMap: { value: FLAT },
         uElevXf: { value: new THREE.Vector4(1, 1, 0, 0) },
         elevPrev: { value: FLAT },
@@ -493,6 +507,22 @@ export class SatelliteTiles {
     this.animating.add(tile);
     this.group.add(mesh);
 
+  }
+
+  loadNight(tile) {
+    tile.nightRequested = true;
+    const { z, x, y } = tile;
+    const zN = Math.min(z, NIGHT_MAX_Z), dz = z - zN, n = 2 ** dz;
+    loadTexture(NIGHT(zN, x >> dz, y >> dz)).then((nt) => {
+      const u = tile.mesh?.material.uniforms;
+      if (!u || (nt.userData.flip ?? 0) !== u.uFlip.value) { nt.dispose(); nt.image?.close?.(); return; }
+      nt.colorSpace = THREE.SRGBColorSpace;
+      const c = x & (n - 1), r = y & (n - 1);
+      // Con z > 8 la tesela es un trozo de su antepasado de nivel 8 (según la orientación de la imagen)
+      u.uNightXf.value.set(1 / n, 1 / n, c / n, nt.userData.flip ? r / n : 1 - (r + 1) / n);
+      u.nightTile.value = nt;
+      u.uNightOn.value = 1;
+    }, () => {});
   }
 
   loadLabels(tile) {
@@ -629,6 +659,7 @@ export class SatelliteTiles {
           u.dayMap.value.dispose();
           u.dayMap.value.image?.close?.();
           if (u.labelMap.value !== EMPTY) { u.labelMap.value.dispose(); u.labelMap.value.image?.close?.(); }
+          if (u.nightTile.value !== EMPTY) { u.nightTile.value.dispose(); u.nightTile.value.image?.close?.(); }
           t.mesh.material.dispose();
           t.mesh = null;
         }
