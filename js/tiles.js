@@ -19,7 +19,10 @@ const TILE_PX = 256;
 const MAX_CACHE = 320;
 const MAX_ELEV_CACHE = 200;
 const MAX_LEAVES = 190;
-const MAX_INFLIGHT = 8;
+const MAX_INFLIGHT = 12;
+const SKIP = 3; // niveles que se pueden saltar de golpe al acercarse (menos descargas intermedias)
+const FADE_MS = 280;
+const MORPH_MS = 450;
 const MAX_ELEV_INFLIGHT = 6;
 const D2R = Math.PI / 180;
 const R_M = 6371000;
@@ -30,6 +33,9 @@ const vertex = /* glsl */ `
   attribute float aSkirt;
   uniform sampler2D elevMap;
   uniform vec4 uElevXf;     // escala.xy, desplazamiento.zw: uv de la tesela → uv de la tesela de relieve
+  uniform sampler2D elevPrev;
+  uniform vec4 uElevXfPrev;
+  uniform float uMorph;     // 0 → relieve anterior, 1 → nuevo (transición suave, sin saltos)
   uniform float uExag;      // exageración vertical (0 = relieve apagado)
   uniform float uHasElev;
   uniform float uSkirt;
@@ -41,7 +47,11 @@ const vertex = /* glsl */ `
     vUv = uv;
     vGeoUv = geoUv;
     float e = 0.0;
-    if (uHasElev > 0.5) e = max(texture2D(elevMap, uElevXf.zw + uv * uElevXf.xy).r, 0.0);
+    if (uHasElev > 0.5) {
+      float eNew = max(texture2D(elevMap, uElevXf.zw + uv * uElevXf.xy).r, 0.0);
+      float eOld = max(texture2D(elevPrev, uElevXfPrev.zw + uv * uElevXfPrev.xy).r, 0.0);
+      e = mix(eOld, eNew, uMorph);
+    }
     vec3 p = position + normal * (e * uExag / ${R_M.toFixed(1)}) - normal * aSkirt * uSkirt;
     vec4 wp = modelMatrix * vec4(p, 1.0);
     vPosW = wp.xyz;
@@ -59,6 +69,8 @@ const fragment = /* glsl */ `
   uniform float uHasElev;
   uniform vec2 uTileSize;   // ancho y alto de la tesela en radianes (≈ radios terrestres)
   uniform float uLabels;
+  uniform float uFlip;      // 1 si la imagen llegó como ImageBitmap (sin voltear)
+  uniform float uAlpha;     // aparición gradual de la tesela
   uniform vec3 uFogColor;
   uniform float uFog;
   ${SHADE_PARS}
@@ -83,17 +95,45 @@ const fragment = /* glsl */ `
       Nt = normalize(N - east * hx / (2.0 * d * uTileSize.x) - north * hy / (2.0 * d * uTileSize.y));
     }
     // Las fotos de satélite ya traen la luz del día: se aclaran un poco para compensar el lambert
-    vec3 day = texture2D(dayMap, vUv).rgb * 1.12;
+    vec2 iuv = vec2(vUv.x, mix(vUv.y, 1.0 - vUv.y, uFlip));
+    vec3 day = texture2D(dayMap, iuv).rgb * 1.12;
     vec3 col = shadeEarthT(day, vGeoUv, N, Nt, V);
-    vec4 lab = texture2D(labelMap, vUv);
+    vec4 lab = texture2D(labelMap, iuv);
     col = mix(col, lab.rgb, lab.a * uLabels * 0.92);
     // Bruma atmosférica con la distancia (solo cerca del suelo)
     float distKm = length(cameraPosition - vPosW) * 6371.0;
     col = mix(col, uFogColor, (1.0 - exp(-distKm / 420.0)) * uFog);
-    gl_FragColor = vec4(col, 1.0);
+    gl_FragColor = vec4(col, uAlpha);
     #include <colorspace_fragment>
   }
 `;
+
+/** Descarga una imagen como textura: abortable y decodificada fuera del hilo principal. */
+async function loadTexture(url, signal) {
+  const res = await fetch(url, { signal, mode: 'cors' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const blob = await res.blob();
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bmp = await createImageBitmap(blob);
+      const t = new THREE.Texture(bmp);
+      t.flipY = false; // ImageBitmap no se voltea al subirla: lo compensa el shader (uFlip)
+      t.userData.flip = 1;
+      t.needsUpdate = true;
+      return t;
+    } catch { /* se intenta con <img> */ }
+  }
+  const img = new Image();
+  const u = URL.createObjectURL(blob);
+  try {
+    img.src = u;
+    await img.decode();
+  } finally { URL.revokeObjectURL(u); }
+  const t = new THREE.Texture(img);
+  t.userData.flip = 0;
+  t.needsUpdate = true;
+  return t;
+}
 
 const tile2lat = (y, z) => Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / 2 ** z))) / D2R;
 const tile2lon = (x, z) => (x / 2 ** z) * 360 - 180;
@@ -148,6 +188,7 @@ export class SatelliteTiles {
     this.lastQuat = new THREE.Quaternion();
     this.errors = 0;
     this.active = false;
+    this.animating = new Set();
     this.canvas = document.createElement('canvas');
     this.canvas.width = this.canvas.height = 256;
     this.ctx2d = this.canvas.getContext('2d', { willReadFrequently: true });
@@ -184,6 +225,7 @@ export class SatelliteTiles {
     if (!show) return;
 
     const now = performance.now();
+    this.animate(now);
     const still = cam.position.distanceToSquared(this.lastCam) < 1e-14 && cam.quaternion.angleTo(this.lastQuat) < 1e-5;
     if (now - this.lastSelect < 120 && still) return;
     if (now - this.lastSelect < 60) return;
@@ -206,12 +248,14 @@ export class SatelliteTiles {
       const b = this.bounds(z, x, y);
       if (camDir.angleTo(b.c) > horizon + b.ang) return; // tras el horizonte
       sphere.center.copy(b.c);
-      sphere.radius = 2 * Math.sin(b.ang / 2) * 1.05 + 0.00002 + relief;
+      const geoR = 2 * Math.sin(b.ang / 2) * 1.05;
+      sphere.radius = geoR + 0.00002 + relief; // el margen de las montañas solo para saber si se ve
       if (!this.frustum.intersectsSphere(sphere)) return;
-      const d = Math.max(cam.position.distanceTo(b.c) - sphere.radius, h * 0.9, 1e-5);
+      const d = Math.max(cam.position.distanceTo(b.c) - geoR, h * 0.9, 1e-5);
       const widthRad = ((2 * Math.PI) / 2 ** z) * Math.cos(b.latC * D2R);
       const px = (widthRad * pxPerUnit) / d;
-      if (px > TILE_PX * quality && z < MAX_Z) {
+      const falloff = 1 + Math.max(0, d / Math.max(h, 1e-6) - 2) * 0.3;
+      if (px > TILE_PX * quality * falloff && z < MAX_Z) {
         const n = z + 1;
         visit(n, 2 * x, 2 * y); visit(n, 2 * x + 1, 2 * y);
         visit(n, 2 * x, 2 * y + 1); visit(n, 2 * x + 1, 2 * y + 1);
@@ -227,31 +271,71 @@ export class SatelliteTiles {
       quality *= 1.35;
     }
 
-    // Se dibuja la tesela si ya está, o su antepasado cargado más cercano
+    // Se dibuja la tesela si ya está, o su antepasado cargado más cercano.
+    // Si falta mucho detalle, se pide un nivel intermedio (saltando hasta SKIP niveles)
+    // para cubrir la vista con pocas descargas y luego afinar.
     const draw = new Set();
-    const wanted = [];
-    for (const [z, x, y, d] of leaves) {
-      const t = this.cache.get(this.key(z, x, y));
-      if (t?.state === 'ready') { draw.add(t); continue; }
-      if (!t) wanted.push({ z, x, y, d });
+    const wanted = new Map();
+    const relevant = new Set();
+    const nearestReady = (z, x, y) => {
       for (let pz = z - 1, px = x >> 1, py = y >> 1; pz >= MIN_Z; pz--, px >>= 1, py >>= 1) {
         const p = this.cache.get(this.key(pz, px, py));
-        if (p?.state === 'ready') { draw.add(p); break; }
+        if (p?.state === 'ready') return p;
       }
+      return null;
+    };
+    for (const [z, x, y, d] of leaves) {
+      for (let pz = z, px = x, py = y; pz >= MIN_Z; pz--, px >>= 1, py >>= 1) relevant.add(this.key(pz, px, py));
+      const t = this.cache.get(this.key(z, x, y));
+      if (t?.state === 'ready') {
+        draw.add(t);
+        t.leafAt = t.leafAt || now;
+        // mientras aparece, se deja debajo la versión anterior
+        if (now - t.readyAt < FADE_MS) { const a = nearestReady(z, x, y); if (a) draw.add(a); }
+        continue;
+      }
+      const a = nearestReady(z, x, y);
+      if (a) draw.add(a);
+      const rz = Math.min(z, a ? a.z + SKIP : MIN_Z + 1);
+      const rx = x >> (z - rz), ry = y >> (z - rz);
+      const key = this.key(rz, rx, ry);
+      if (!this.cache.has(key) && !wanted.has(key)) wanted.set(key, { z: rz, x: rx, y: ry, d });
     }
-    for (const t of this.cache.values()) {
+    for (const t of [...this.cache.values()]) {
       const on = draw.has(t);
       if (t.mesh) t.mesh.visible = on;
       if (on) {
         t.used = now;
         if (this.terrainOn) this.attachElevation(t);
+        // Nombres: solo para teselas definitivas que llevan un momento a la vista
+        if (this.labels.value && t.z <= 15 && !t.labelsRequested && t.leafAt && now - t.leafAt > 400) this.loadLabels(t);
+      } else {
+        t.leafAt = 0;
+      }
+      // Descargas que ya no sirven (la vista cambió): se cancelan
+      if (t.state === 'loading' && !relevant.has(t.key)) {
+        t.ctrl?.abort();
+        this.cache.delete(t.key);
       }
     }
 
-    wanted.sort((a, b) => a.z - b.z || a.d - b.d);
-    this.queue = wanted;
+    this.queue = [...wanted.values()].sort((a, b) => a.z - b.z || a.d - b.d);
     this.pump();
     this.evict();
+  }
+
+  /** Animaciones por fotograma: aparición de teselas y transición del relieve. */
+  animate(now) {
+    for (const t of this.animating) {
+      if (!t.mesh) { this.animating.delete(t); continue; }
+      const u = t.mesh.material.uniforms;
+      const a = Math.min(1, (now - t.readyAt) / FADE_MS);
+      const m = t.morphStart != null ? Math.min(1, (now - t.morphStart) / MORPH_MS) : 1;
+      u.uAlpha.value = a * a * (3 - 2 * a);
+      t.mesh.material.transparent = a < 1;
+      u.uMorph.value = m * m * (3 - 2 * m);
+      if (a >= 1 && m >= 1) this.animating.delete(t);
+    }
   }
 
   // --- Imágenes -------------------------------------------------------------
@@ -260,28 +344,24 @@ export class SatelliteTiles {
       const { z, x, y } = this.queue.shift();
       const key = this.key(z, x, y);
       if (this.cache.has(key)) continue;
-      const tile = { key, z, x, y, state: 'loading', used: performance.now(), mesh: null };
+      const tile = { key, z, x, y, state: 'loading', used: performance.now(), mesh: null, ctrl: new AbortController() };
       this.cache.set(key, tile);
       this.inflight++;
-      this.loader.load(
-        IMAGERY(z, x, y),
-        (tex) => {
-          this.inflight--;
-          tex.colorSpace = THREE.SRGBColorSpace;
-          tex.anisotropy = this.aniso;
-          if (!this.cache.has(key)) { tex.dispose(); return; }
-          this.build(tile, tex);
-          this.lastSelect = 0;
-          this.pump();
-        },
-        undefined,
-        () => {
-          this.inflight--;
-          tile.state = 'error';
-          if (++this.errors === 6) this.onError?.();
-          this.pump();
-        },
-      );
+      loadTexture(IMAGERY(z, x, y), tile.ctrl.signal).then((tex) => {
+        this.inflight--;
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = this.aniso;
+        if (this.cache.get(key) !== tile) { tex.dispose(); tex.image?.close?.(); this.pump(); return; }
+        this.build(tile, tex);
+        this.lastSelect = 0;
+        this.pump();
+      }, (e) => {
+        this.inflight--;
+        if (e?.name === 'AbortError') { this.pump(); return; }
+        tile.state = 'error';
+        if (++this.errors === 6) this.onError?.();
+        this.pump();
+      });
     }
   }
 
@@ -342,6 +422,11 @@ export class SatelliteTiles {
         labelMap: { value: EMPTY },
         elevMap: { value: FLAT },
         uElevXf: { value: new THREE.Vector4(1, 1, 0, 0) },
+        elevPrev: { value: FLAT },
+        uElevXfPrev: { value: new THREE.Vector4(1, 1, 0, 0) },
+        uMorph: { value: 1 },
+        uFlip: { value: tex.userData.flip ?? 0 },
+        uAlpha: { value: 0 },
         uHasElev: { value: 0 },
         uTileSize: { value: new THREE.Vector2(tileRad * Math.cos(b.latC * D2R), ((b.lat0 - b.lat1) * D2R)) },
         uSkirt: { value: tileRad * 0.04 + 0.0004 },
@@ -367,14 +452,22 @@ export class SatelliteTiles {
     mesh.visible = false;
     tile.mesh = mesh;
     tile.state = 'ready';
+    tile.readyAt = performance.now();
+    this.animating.add(tile);
     this.group.add(mesh);
 
-    if (z >= 5) {
-      this.loader.load(LABELS(z, x, y), (lt) => {
-        lt.colorSpace = THREE.SRGBColorSpace;
-        if (tile.mesh) mat.uniforms.labelMap.value = lt; else lt.dispose();
-      }, undefined, () => {});
-    }
+  }
+
+  loadLabels(tile) {
+    tile.labelsRequested = true;
+    const { z, x, y } = tile;
+    loadTexture(LABELS(z, x, y)).then((lt) => {
+      lt.colorSpace = THREE.SRGBColorSpace;
+      const u = tile.mesh?.material.uniforms;
+      // misma orientación que la imagen (ambas llegan por el mismo camino)
+      if (u && (lt.userData.flip ?? 0) === u.uFlip.value) u.labelMap.value = lt;
+      else { lt.dispose(); lt.image?.close?.(); }
+    }, () => {});
   }
 
   // --- Relieve --------------------------------------------------------------
@@ -398,6 +491,12 @@ export class SatelliteTiles {
       if (tile.elevZ === zE) return;
       const u = tile.mesh.material.uniforms;
       const s = 1 / 2 ** dz;
+      // el relieve nuevo crece desde el anterior en vez de saltar
+      u.elevPrev.value = u.uHasElev.value ? u.elevMap.value : FLAT;
+      u.uElevXfPrev.value.copy(u.uElevXf.value);
+      u.uMorph.value = 0;
+      tile.morphStart = performance.now();
+      this.animating.add(tile);
       u.elevMap.value = e.tex;
       u.uElevXf.value.set(s, s, (tile.x - (xE << dz)) * s, (2 ** dz - 1 - (tile.y - (yE << dz))) * s);
       u.uHasElev.value = 1;
@@ -491,7 +590,8 @@ export class SatelliteTiles {
           t.mesh.geometry.dispose();
           const u = t.mesh.material.uniforms;
           u.dayMap.value.dispose();
-          if (u.labelMap.value !== EMPTY) u.labelMap.value.dispose();
+          u.dayMap.value.image?.close?.();
+          if (u.labelMap.value !== EMPTY) { u.labelMap.value.dispose(); u.labelMap.value.image?.close?.(); }
           t.mesh.material.dispose();
           t.mesh = null;
         }

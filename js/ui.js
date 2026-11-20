@@ -157,7 +157,7 @@ export const ui = {
   },
   hideLoader() {
     document.body.classList.add('ready');
-    setTimeout(() => $('loader')?.remove(), 1200);
+    setTimeout(() => $('loader')?.remove(), 800);
   },
   fatal(msg) {
     $('loader-status').textContent = msg;

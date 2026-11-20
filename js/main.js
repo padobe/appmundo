@@ -54,7 +54,7 @@ scene.background = new THREE.Color('#02040a');
 const camera = new THREE.PerspectiveCamera(IS_MOBILE ? 48 : 36, innerWidth / innerHeight, 0.01, 200);
 const HOME_H = IS_MOBILE ? 3.6 : 2.6;
 const homeLon = THREE.MathUtils.clamp(-new Date().getTimezoneOffset() / 4, -180, 180);
-camera.position.copy(latLonToVec3(22, homeLon, 11));
+camera.position.copy(latLonToVec3(22, homeLon, 7));
 
 let composer = null;
 if (!IS_MOBILE) {
@@ -94,7 +94,7 @@ const armIdle = () => {
   idleTimer = setTimeout(() => { if (!follow && !rig.flight) controls.autoRotate = true; }, IDLE_MS);
 };
 const stopIdle = () => { controls.autoRotate = false; clearTimeout(idleTimer); };
-controls.addEventListener('start', stopIdle);
+controls.addEventListener('start', () => { stopIdle(); anchor = null; });
 controls.addEventListener('end', armIdle);
 
 const raycaster = new THREE.Raycaster();
@@ -105,24 +105,22 @@ function surfaceAt(x, y) {
   return raycaster.ray.intersectSphere(unitSphere, _hit);
 }
 
-/** Acerca/aleja multiplicando la altitud sobre el terreno; al acercar, gira hacia el punto señalado. */
+// Zoom anclado: el punto del suelo bajo el cursor se queda quieto en pantalla mientras
+// la cámara sube o baja (como en Google Earth), sin giros bruscos.
+let anchor = null; // { x, y, p: punto de la superficie bajo el cursor }
+const _q = new THREE.Quaternion();
+
+/** Acerca/aleja multiplicando la altitud sobre el terreno, anclado al punto bajo el cursor. */
 function zoomBy(factor, x, y) {
   const ground = terrainM / R_M;
   const h = camera.position.length() - 1;
   const from = hTarget ?? h;
   const to = THREE.MathUtils.clamp(ground + (from - ground) * factor, ground + MIN_CLEARANCE, MAX_H);
-  if (factor < 1 && x != null && !follow) {
+  if (x != null && !follow) {
     const p = surfaceAt(x, y);
-    if (p) {
-      const c = camera.position.clone().normalize();
-      const target = p.clone().normalize();
-      const ang = c.angleTo(target);
-      if (ang > 1e-9) {
-        const axis = new THREE.Vector3().crossVectors(c, target).normalize();
-        const f = THREE.MathUtils.clamp(1 - (to - ground) / Math.max(from - ground, 1e-9), 0, 1) * 0.92;
-        camera.position.applyAxisAngle(axis, ang * f);
-      }
-    }
+    // Se conserva el ancla mientras dure la ráfaga de rueda sobre el mismo punto
+    if (p && !(anchor && Math.hypot(anchor.x - x, anchor.y - y) < 3)) anchor = { x, y, p: p.clone().normalize() };
+    if (!p) anchor = null;
   }
   hTarget = to;
   zoomRate = 8;
@@ -251,9 +249,17 @@ const aurora = new AuroraLayer(ctx);
 const wind = new WindLayer(ctx);
 const eonet = new EonetLayer(ctx);
 const layers = [clouds, aurora, wind, quakes, eonet, sats, iss];
-for (const l of layers) {
-  ui.registerSource(l.id, l.name);
-  l.start();
+for (const l of layers) ui.registerSource(l.id, l.name);
+// Lo imprescindible arranca ya; lo pesado espera a que el planeta esté en pantalla
+quakes.start();
+iss.start();
+let deferredStarted = false;
+function startDeferred() {
+  if (deferredStarted) return;
+  deferredStarted = true;
+  earth.loadFull();
+  sky.load();
+  for (const l of [clouds, aurora, eonet, sats, wind]) l.start();
 }
 ui.bindToggles({
   quakes: (on) => quakes.setVisible(on),
@@ -359,10 +365,11 @@ function startIntro() {
   started = true;
   ui.hideLoader();
   hTarget = HOME_H;
-  zoomRate = 1.4;
+  zoomRate = 2.6;
+  setTimeout(startDeferred, 300);
   setTimeout(() => { if (!follow && !controls.autoRotate) armIdle(); }, 400);
 }
-setTimeout(() => { if (!started) startIntro(); }, 12000);
+setTimeout(() => { if (!started) startIntro(); }, 8000);
 
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
@@ -425,6 +432,19 @@ renderer.setAnimationLoop(() => {
   controls.autoRotateSpeed = AUTO_SPEED * THREE.MathUtils.clamp(h / HOME_H, 0.004, 1);
   controls.update();
   if (tilt > 0.0005) camera.rotateX(tilt);
+
+  // Zoom anclado: gira la cámara para que el punto elegido vuelva a quedar bajo el cursor
+  if (anchor && hTarget != null && !rig.flight && !follow) {
+    camera.updateMatrixWorld();
+    const q = surfaceAt(anchor.x, anchor.y);
+    if (q) {
+      _q.setFromUnitVectors(q.normalize(), anchor.p);
+      camera.position.applyQuaternion(_q);
+      camera.quaternion.premultiply(_q);
+    }
+  } else if (hTarget == null) {
+    anchor = null;
+  }
 
   earth.setAltitude(h);
   sky.update(dt, h);

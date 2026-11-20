@@ -54,11 +54,14 @@ export class WindLayer {
     this.ctx.scene.add(this.lines);
   }
 
-  start() { /* se carga al activarse por primera vez */ }
+  start() {
+    this.ready = true; // a partir de aquí ya se puede descargar
+    if (this.visible) this.setVisible(true);
+  }
 
   setVisible(on) {
     this.visible = on;
-    if (on && !this.started) { this.started = true; this.load(); }
+    if (on && this.ready && !this.started) { this.started = true; this.load(); }
   }
 
   async load() {

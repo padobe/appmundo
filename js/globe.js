@@ -120,7 +120,8 @@ function solidTexture(r, g, b) {
 }
 
 export function createEarth({ scene, renderer, manager, isMobile, onTextureError }) {
-  const loader = new THREE.TextureLoader(manager);
+  const loader = new THREE.TextureLoader(manager); // críticas: la pantalla de carga las espera
+  const bgLoader = new THREE.TextureLoader(); // el resto llega después, sin bloquear
   const aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
   const uniforms = {
@@ -132,8 +133,8 @@ export function createEarth({ scene, renderer, manager, isMobile, onTextureError
 
   let waterSampler = null;
 
-  const load = (file, key, { srgb = true, onLoad } = {}) => {
-    loader.load(
+  const load = (file, key, { srgb = true, onLoad, critical = false } = {}) => {
+    (critical ? loader : bgLoader).load(
       TEX + file,
       (t) => {
         t.colorSpace = srgb ? THREE.SRGBColorSpace : THREE.NoColorSpace;
@@ -146,12 +147,15 @@ export function createEarth({ scene, renderer, manager, isMobile, onTextureError
     );
   };
 
-  load('earth-blue-marble.jpg', 'dayMap');
-  load('earth-night.jpg', 'nightMap');
-  load('earth-water.png', 'waterMap', {
-    srgb: false,
-    onLoad: (t) => { waterSampler = makeSampler(t.image); },
-  });
+  // Primero versiones ligeras (≈115 KB) para enseñar el planeta cuanto antes;
+  // las de 4096 px y la máscara de agua se cargan en segundo plano.
+  load('earth-day-1k.jpg', 'dayMap', { critical: true });
+  load('earth-night-1k.jpg', 'nightMap', { critical: true });
+  const loadFull = () => {
+    load('earth-water.jpg', 'waterMap', { srgb: false, onLoad: (t) => { waterSampler = makeSampler(t.image); } });
+    load(isMobile ? 'earth-day-1k.jpg' : 'earth-day-4k.jpg', 'dayMap');
+    load('earth-night-4k.jpg', 'nightMap');
+  };
 
   const seg = isMobile ? [96, 64] : [160, 100];
   const earth = new THREE.Mesh(
@@ -183,6 +187,8 @@ export function createEarth({ scene, renderer, manager, isMobile, onTextureError
   return {
     mesh: earth,
     uniforms,
+    /** Carga las texturas de alta resolución (se llama cuando ya se ve el planeta). */
+    loadFull,
     /** Atenúa el halo cuando la cámara se mete en la atmósfera (zoom cercano). */
     setAltitude(h) { atmoUniforms.uFade.value = THREE.MathUtils.smoothstep(h, 0.06, 0.22); },
     setSunDirection(v) { uniforms.sunDir.value.copy(v).normalize(); },

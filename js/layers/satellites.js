@@ -74,10 +74,10 @@ export class SatellitesLayer {
     this.lastTick = 0;
   }
 
-  start() { this.sync(); }
+  start() { this.started = true; this.sync(); }
 
-  setVisible(on) { this.visible = on; if (on) this.sync(); }
-  setGroup(key, on) { this.enabled[key] = on; this.sync(); }
+  setVisible(on) { this.visible = on; if (this.started) this.sync(); }
+  setGroup(key, on) { this.enabled[key] = on; if (this.started) this.sync(); }
 
   /** Fuentes de CelesTrak necesarias (la estación espacial siempre, para los pasos de la ISS). */
   sources() {

@@ -149,12 +149,12 @@ export class Sky {
     this.moonInfo = null;
     this.buildMoon();
     this.buildSkyDome();
-    this.load();
+    // load() lo llama main cuando el planeta ya está en pantalla
   }
 
   async load() {
     // Textura de fondo tenue (vía láctea/estrellas débiles), girando con el cielo
-    new THREE.TextureLoader().load('./assets/textures/night-sky.png', (t) => {
+    new THREE.TextureLoader().load('./assets/textures/night-sky.jpg', (t) => {
       t.colorSpace = THREE.SRGBColorSpace;
       const m = new THREE.Mesh(
         new THREE.SphereGeometry(STAR_R * 1.1, 48, 24),
