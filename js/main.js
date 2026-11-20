@@ -21,6 +21,7 @@ import { SatellitesLayer } from './layers/satellites.js';
 import { AuroraLayer } from './layers/aurora.js';
 import { WindLayer } from './layers/wind.js';
 import { EonetLayer } from './layers/eonet.js';
+import { GdacsLayer } from './layers/events.js';
 import { PlacePanel } from './place.js';
 import { Tour } from './tour.js';
 import { PhotoLayer } from './layers/photo.js';
@@ -260,7 +261,23 @@ const aurora = new AuroraLayer(ctx);
 const wind = new WindLayer(ctx);
 const eonet = new EonetLayer(ctx);
 const photo = new PhotoLayer(ctx);
-const layers = [photo, clouds, aurora, wind, quakes, eonet, sats, iss];
+// Vista detallada de eventos (GDACS): el módulo pesado se descarga solo al abrir el primero
+let eventView = null;
+async function openEvent(evt) {
+  tour.stop();
+  try {
+    if (!eventView) {
+      const m = await import('./events/view.js');
+      eventView = new m.EventView(ctx, { rig, homeH: HOME_H, layer: gdacs });
+    }
+    await eventView.open(evt);
+  } catch (e) {
+    console.warn('[evento]', e);
+    ui.toast('No se pudo abrir la vista del evento', 'warn', 'event-view');
+  }
+}
+const gdacs = new GdacsLayer(ctx, { open: openEvent });
+const layers = [photo, clouds, aurora, wind, quakes, eonet, gdacs, sats, iss];
 // Con la foto real de día, las nubes en directo solo se dibujan de noche (si no, se duplican)
 photo.onChange = () => clouds.setNightOnly(photo.active);
 time.onChange(() => clouds.setNightOnly(photo.active && (time.live || time.span === 'day')));
@@ -274,7 +291,7 @@ function startDeferred() {
   deferredStarted = true;
   earth.loadFull();
   sky.load();
-  for (const l of [photo, clouds, aurora, eonet, sats, wind]) l.start();
+  for (const l of [photo, clouds, aurora, eonet, gdacs, sats, wind]) l.start();
   ephem.loadAstronomy().catch(() => ui.toast('No se pudo cargar el cálculo de planetas y eclipses', 'warn', 'astro'));
 }
 ui.bindToggles({
@@ -288,6 +305,7 @@ ui.bindToggles({
   aurora: (on) => aurora.setVisible(on),
   wind: (on) => wind.setVisible(on),
   eonet: (on) => eonet.setVisible(on),
+  gdacs: (on) => gdacs.setVisible(on),
   clouds: (on) => clouds.setVisible(on),
   constellations: (on) => sky.setConstellations(on),
   planets: (on) => sky.setPlanets(on),
@@ -326,7 +344,7 @@ function toggleVideo(force) {
 document.getElementById('btn-video').addEventListener('click', () => toggleVideo());
 document.getElementById('video-close').addEventListener('click', () => toggleVideo(false));
 
-window.planeta = { camera, controls, layers, scene, tiles, time, sky, rig, tour, place, eclipses, photo }; // depuración
+window.planeta = { camera, controls, layers, scene, tiles, time, sky, rig, tour, place, eclipses, photo, gdacs }; // depuración
 
 // --- Seguir a la ISS --------------------------------------------------------
 ui.onFollow(() => { tour.stop(); setFollow(!follow); });
@@ -500,6 +518,7 @@ renderer.setAnimationLoop(() => {
   for (const l of layers) l.update(dt);
   place.update();
   eclipses.update();
+  eventView?.update();
   earth.uniforms.uTime.value += dt;
 
   // Terreno bajo la cámara (para no atravesar montañas)

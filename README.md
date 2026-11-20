@@ -7,6 +7,7 @@ Un globo terráqueo 3D con lo que está pasando en el mundo **ahora mismo**:
 - **Cielo real**: unas 4.000 estrellas en su posición según la hora sidérea, constelaciones con nombres en español y la Luna en su posición y fase reales.
 - **Satélites en directo**: brillantes, GPS/navegación, geoestacionarios y Starlink (este último apagado por defecto), calculados con SGP4 en un Web Worker.
 - **Auroras** (previsión NOAA OVATION), **viento** con partículas (apagado por defecto), **nubes reales**, **terremotos** de 24 h, **desastres activos** de NASA (incendios, tormentas con su trayectoria, volcanes…) y la **ISS** con su estela.
+- **Eventos en detalle (GDACS)**: alertas verdes, naranjas y rojas de terremotos, ciclones, inundaciones e incendios; al pulsar una la cámara vuela al terreno y se abre un panel con fuente y fecha, la línea de tiempo del evento y una gráfica (en ciclones: viento por aviso, observado y previsión).
 - **Desde aquí**: escribe una calle, ciudad o zona y verás su hora local, salida y puesta del sol, la Luna, el tiempo, la probabilidad de aurora, lo que ha pasado cerca y los próximos pasos visibles de la ISS. No usa tu ubicación.
 - **Foto real de ayer** (NASA GIBS, satélites VIIRS) como imagen del planeta, con las nubes, la nieve y el humo de verdad.
 - **Planetas y Sol** en su posición real, **eclipses** (lista de los próximos, viaje al momento exacto, sombra de la Luna sobre la Tierra, línea central y visor de la Luna en los lunares).

@@ -23,7 +23,7 @@ export const EONET_CATS = {
   manmade: { label: 'Origen humano', color: '#c0c6d4', glyph: 'dot' },
 };
 
-function icon(cat) {
+export function icon(cat) {
   const c = document.createElement('canvas');
   c.width = c.height = 64;
   const g = c.getContext('2d');

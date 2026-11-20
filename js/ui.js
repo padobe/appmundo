@@ -47,23 +47,25 @@ export const ui = {
     range.style.setProperty('--p', `${(f * 100).toFixed(2)}%`);
     const playing = !time.live && time.playing;
     const play = $('tl-play');
-    const what = time.span === 'year' ? 'el último año' : time.span === 'event' ? 'el eclipse' : 'las últimas 24 h';
+    const what = time.span === 'year' ? 'el último año' : time.span === 'event' ? (time.event?.what || 'el eclipse') : 'las últimas 24 h';
     play.setAttribute('aria-label', playing ? 'Pausar' : `Reproducir ${what}`);
     play.dataset.state = playing ? 'pause' : 'play';
     $('tl-live').setAttribute('aria-pressed', String(time.live));
     for (const b of document.querySelectorAll('[data-span]')) b.setAttribute('aria-pressed', String(b.dataset.span === time.span));
     const tl = document.querySelector('.timeline');
     tl.dataset.span = time.span;
-    const ticks = { day: ['−24 h', '−12 h', 'ahora'], year: ['hace 1 año', '6 meses', 'hoy'], event: ['−3 h', 'máximo', '+3 h'] }[time.span];
+    const ticks = (time.span === 'event' && time.event?.ticks) || { day: ['−24 h', '−12 h', 'ahora'], year: ['hace 1 año', '6 meses', 'hoy'], event: ['−3 h', 'máximo', '+3 h'] }[time.span];
     const tk = $('tl-ticks');
-    if (tk.dataset.span !== time.span) {
-      tk.dataset.span = time.span;
+    const tkKey = `${time.span}|${ticks.join('|')}`;
+    if (tk.dataset.span !== tkKey) {
+      tk.dataset.span = tkKey;
       tk.innerHTML = ticks.map((t) => `<span>${t}</span>`).join('');
     }
     let txt = 'En directo';
     if (!time.live) {
       const d = new Date(time.now());
       if (time.span === 'year') txt = d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' });
+      else if (time.span === 'event' && time.event?.long) txt = d.toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC';
       else if (time.span === 'event') txt = d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC';
       else {
         const mins = Math.round((Date.now() - time.now()) / 60000);
@@ -78,6 +80,8 @@ export const ui = {
   // --- Ficha de detalle (terremoto seleccionado, eclipses…) -------------
   showDetail(html, onClose) {
     const card = $('detail-card');
+    // La vista de evento se recoge sola si otra ficha ocupa el panel
+    if (this.detailClose?.exclusive) { const f = this.detailClose; this.detailClose = null; f(); }
     $('detail-body').innerHTML = html;
     this.detailClose = onClose;
     document.body.classList.add('detail-open');

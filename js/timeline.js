@@ -62,9 +62,9 @@ export class Timeline {
   }
 
   /** Viaje a un momento concreto: ventana [start, end] reproducida a `speed`× */
-  travel({ start, end, label, speed }) {
+  travel({ start, end, label, speed, ...extra }) {
     this.span = 'event';
-    this.event = { start, end, label, speed };
+    this.event = { start, end, label, speed, ...extra }; // extra: owner, ticks, what, long…
     this.live = false;
     this.t = start;
     this.playing = true;
