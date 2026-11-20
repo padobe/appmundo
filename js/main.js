@@ -17,7 +17,6 @@ import { ui } from './ui.js';
 import { EarthquakesLayer } from './layers/earthquakes.js';
 import { IssLayer } from './layers/iss.js';
 import { CloudsLayer } from './layers/clouds.js';
-import { PlanesLayer } from './layers/planes.js';
 
 const IS_MOBILE = matchMedia('(pointer: coarse)').matches || Math.min(innerWidth, innerHeight) < 600;
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -177,9 +176,8 @@ const size = () => ({ w: innerWidth, h: innerHeight });
 const ctx = { scene, camera, renderer, ui, earth, time, isMobile: IS_MOBILE, size };
 const quakes = new EarthquakesLayer(ctx);
 const iss = new IssLayer(ctx);
-const planes = new PlanesLayer(ctx);
 const clouds = new CloudsLayer(ctx);
-const layers = [clouds, quakes, planes, iss];
+const layers = [clouds, quakes, iss];
 for (const l of layers) {
   ui.registerSource(l.id, l.name);
   l.start();
@@ -187,7 +185,6 @@ for (const l of layers) {
 ui.bindToggles({
   quakes: (on) => quakes.setVisible(on),
   iss: (on) => iss.setVisible(on),
-  planes: (on) => planes.setVisible(on),
   clouds: (on) => clouds.setVisible(on),
   labels: (on) => tiles.setLabels(on),
 });
