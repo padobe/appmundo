@@ -33,6 +33,9 @@ export const ui = {
     range.addEventListener('input', () => time.seek(Number(range.value) / 1000));
     play.addEventListener('click', () => time.togglePlay());
     live.addEventListener('click', () => time.goLive());
+    for (const b of document.querySelectorAll('[data-span]')) {
+      b.addEventListener('click', () => time.setSpan(b.dataset.span));
+    }
     time.onChange(() => this.updateTimeline(time));
     this.updateTimeline(time);
   },
@@ -44,16 +47,56 @@ export const ui = {
     range.style.setProperty('--p', `${(f * 100).toFixed(2)}%`);
     const playing = !time.live && time.playing;
     const play = $('tl-play');
-    play.setAttribute('aria-label', playing ? 'Pausar' : 'Reproducir las últimas 24 h');
+    const what = time.span === 'year' ? 'el último año' : time.span === 'event' ? 'el eclipse' : 'las últimas 24 h';
+    play.setAttribute('aria-label', playing ? 'Pausar' : `Reproducir ${what}`);
     play.dataset.state = playing ? 'pause' : 'play';
     $('tl-live').setAttribute('aria-pressed', String(time.live));
+    for (const b of document.querySelectorAll('[data-span]')) b.setAttribute('aria-pressed', String(b.dataset.span === time.span));
+    const tl = document.querySelector('.timeline');
+    tl.dataset.span = time.span;
+    const ticks = { day: ['−24 h', '−12 h', 'ahora'], year: ['hace 1 año', '6 meses', 'hoy'], event: ['−3 h', 'máximo', '+3 h'] }[time.span];
+    const tk = $('tl-ticks');
+    if (tk.dataset.span !== time.span) {
+      tk.dataset.span = time.span;
+      tk.innerHTML = ticks.map((t) => `<span>${t}</span>`).join('');
+    }
     let txt = 'En directo';
     if (!time.live) {
-      const mins = Math.round((Date.now() - time.now()) / 60000);
-      const h = Math.floor(mins / 60), m = mins % 60;
-      txt = `−${h ? `${h} h ` : ''}${m} min`;
+      const d = new Date(time.now());
+      if (time.span === 'year') txt = d.toLocaleDateString('es-ES', { day: 'numeric', month: 'short', year: 'numeric' });
+      else if (time.span === 'event') txt = d.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }) + ' UTC';
+      else {
+        const mins = Math.round((Date.now() - time.now()) / 60000);
+        const h = Math.floor(mins / 60), m = mins % 60;
+        txt = `−${h ? `${h} h ` : ''}${m} min`;
+      }
     }
     this.set('tl-label', txt);
+    this.set('tl-event', time.span === 'event' && time.event ? time.event.label : '');
+  },
+
+  // --- Ficha de detalle (terremoto seleccionado, eclipses…) -------------
+  showDetail(html, onClose) {
+    const card = $('detail-card');
+    $('detail-body').innerHTML = html;
+    this.detailClose = onClose;
+    document.body.classList.add('detail-open');
+    card.focus({ preventScroll: true });
+  },
+  hideDetail() {
+    document.body.classList.remove('detail-open');
+    const fn = this.detailClose;
+    this.detailClose = null;
+    fn?.();
+  },
+  bindDetail() {
+    $('detail-close').addEventListener('click', () => this.hideDetail());
+  },
+
+  /** Anuncia un texto a los lectores de pantalla (región aria-live invisible). */
+  announce(text) {
+    const el = $('sr-live');
+    if (el && el.textContent !== text) el.textContent = text;
   },
 
   // --- Capas activables -----------------------------------------------

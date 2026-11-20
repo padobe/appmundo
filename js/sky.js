@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { gmst, moonPosition, moonPhase } from './astro.js';
 import { latLonToVec3, toScreen, isOccluded } from './geo.js';
+import * as ephem from './ephemeris.js';
 
 const STAR_R = 100;
 const MOON_DIST = 22; // radios terrestres (la real es ~60; se acerca para que se vea)
@@ -90,12 +91,27 @@ const moonVertex = /* glsl */ `
 const moonFragment = /* glsl */ `
   uniform sampler2D map;
   uniform vec3 sunDir;
+  uniform vec3 uMoonTrue;   // posición real de la Luna (radios terrestres)
   varying vec2 vUv;
   varying vec3 vNormalW;
   void main() {
     vec3 c = texture2D(map, vUv).rgb;
-    float l = max(dot(normalize(vNormalW), sunDir), 0.0);
-    vec3 col = c * (pow(l, 0.8) * 1.25 + 0.012);   // + luz cenicienta
+    vec3 n = normalize(vNormalW);
+    float l = max(dot(n, sunDir), 0.0);
+    vec3 col = c * (pow(l, 0.8) * 1.25);
+    // Sombra de la Tierra: umbra (roja, por la luz que refracta la atmósfera) y penumbra
+    vec3 P = uMoonTrue + n * 0.2727;
+    float along = dot(P, -sunDir);
+    if (along > 0.0) {
+      float dAxis = length(P + sunDir * along);
+      float umbra = 1.0 - along * 0.004609 + 0.02;
+      float penum = 1.0 + along * 0.004694;
+      float inU = 1.0 - smoothstep(umbra - 0.025, umbra + 0.025, dAxis);
+      float inP = 1.0 - smoothstep(umbra, penum, dAxis);
+      col *= mix(1.0, 0.4, inP);
+      col = mix(col, c * vec3(0.62, 0.17, 0.06) * 0.42 * (0.4 + 0.6 * l), inU);
+    }
+    col += c * 0.012; // luz cenicienta
     gl_FragColor = vec4(col, 1.0);
     #include <colorspace_fragment>
   }
@@ -111,7 +127,7 @@ function bvColor(bv) {
   return c;
 }
 
-function labelSprite(text) {
+function labelSprite(text, color = 'rgba(170, 200, 255, 0.75)') {
   const c = document.createElement('canvas');
   const g = c.getContext('2d');
   const font = '500 26px "Instrument Sans", system-ui, sans-serif';
@@ -119,7 +135,7 @@ function labelSprite(text) {
   const w = Math.ceil(g.measureText(text).width) + 16;
   c.width = w; c.height = 40;
   g.font = font;
-  g.fillStyle = 'rgba(170, 200, 255, 0.75)';
+  g.fillStyle = color;
   g.textBaseline = 'middle';
   g.fillText(text, 8, 21);
   const tex = new THREE.CanvasTexture(c);
@@ -148,6 +164,8 @@ export class Sky {
     this.moonOn = true;
     this.moonInfo = null;
     this.buildMoon();
+    this.buildPlanets();
+    this.planetsOn = true;
     this.buildSkyDome();
     // load() lo llama main cuando el planeta ya está en pantalla
   }
@@ -260,12 +278,97 @@ export class Sky {
     const geo = new THREE.SphereGeometry(MOON_R, 48, 32);
     geo.rotateY(-Math.PI / 2); // la cara visible (longitud 0) mira hacia +z → hacia la Tierra con lookAt
     this.moon = new THREE.Mesh(geo, new THREE.ShaderMaterial({
-      uniforms: { map: { value: tex }, sunDir: this.earth.uniforms.sunDir },
+      uniforms: { map: { value: tex }, sunDir: this.earth.uniforms.sunDir, uMoonTrue: this.earth.uniforms.uMoonPos },
       vertexShader: moonVertex,
       fragmentShader: moonFragment,
     }));
     this.moon.renderOrder = -4;
+    this.moon.layers.enable(2); // también la ve la cámara del visor de eclipses lunares
     this.scene.add(this.moon);
+  }
+
+  // --- Planetas y Sol -----------------------------------------------------------
+  buildPlanets() {
+    const n = ephem.PLANETS.length + 1; // + el Sol
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+    g.setAttribute('aSize', new THREE.BufferAttribute(new Float32Array(n), 1));
+    g.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+    this.planetPoints = new THREE.Points(g, new THREE.ShaderMaterial({
+      uniforms: { uPixelRatio: { value: this.pixelRatio } },
+      vertexShader: `
+        attribute float aSize; attribute vec3 aColor;
+        uniform float uPixelRatio;
+        varying vec3 vColor; varying float vSun;
+        void main() {
+          vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          gl_Position = p.xyww;            // en el infinito; la Tierra la tapa por profundidad
+          gl_PointSize = aSize * uPixelRatio;
+          vColor = aColor; vSun = step(30.0, aSize);
+        }`,
+      fragmentShader: `
+        varying vec3 vColor; varying float vSun;
+        void main() {
+          float r = length(gl_PointCoord - 0.5) * 2.0;
+          float core = smoothstep(vSun > 0.5 ? 0.12 : 0.45, 0.0, r);
+          float halo = exp(-r * r * (vSun > 0.5 ? 6.0 : 9.0)) * (vSun > 0.5 ? 0.7 : 0.35);
+          float a = core + halo;
+          if (a < 0.01) discard;
+          gl_FragColor = vec4(vColor * a, a);
+        }`,
+      depthTest: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    }));
+    this.planetPoints.frustumCulled = false;
+    this.planetPoints.renderOrder = 1.2;
+    this.planetGroup = new THREE.Group();
+    this.planetGroup.add(this.planetPoints);
+    this.planetLabels = ephem.PLANETS.map((p) => {
+      const sp = labelSprite(p.name, 'rgba(255, 226, 180, 0.85)');
+      sp.scale.multiplyScalar(0.85);
+      this.planetGroup.add(sp);
+      return sp;
+    });
+    this.scene.add(this.planetGroup);
+    this.planetData = null;
+    this.lastPlanets = 0;
+  }
+
+  setPlanets(on) { this.planetsOn = on; }
+
+  updatePlanets(date, h) {
+    if (!this.planetGroup) return;
+    this.planetGroup.position.copy(this.camera.position);
+    this.planetGroup.visible = this.planetsOn !== false && ephem.ready();
+    if (!this.planetGroup.visible) return;
+    const now = performance.now();
+    const fast = !this.time.live;
+    if (now - this.lastPlanets > (fast ? 60 : 2000) || !this.planetData) {
+      this.lastPlanets = now;
+      this.planetData = ephem.planets(date);
+      const pos = this.planetPoints.geometry.attributes.position;
+      const size = this.planetPoints.geometry.attributes.aSize;
+      const col = this.planetPoints.geometry.attributes.aColor;
+      const c = new THREE.Color();
+      this.planetData.forEach((p, i) => {
+        pos.setXYZ(i, p.dir.x * 100, p.dir.y * 100, p.dir.z * 100);
+        size.setX(i, THREE.MathUtils.clamp((3.2 - p.mag) * 2.3, 2.2, 13));
+        c.set(p.color);
+        col.setXYZ(i, c.r, c.g, c.b);
+        this.planetLabels[i].position.copy(p.dir).multiplyScalar(20);
+        this.planetLabels[i].center.set(-0.12, 0.5);
+      });
+      // El Sol, en su dirección real
+      const k = this.planetData.length;
+      const sd = this.earth.uniforms.sunDir.value;
+      pos.setXYZ(k, sd.x * 100, sd.y * 100, sd.z * 100);
+      size.setX(k, 90);
+      col.setXYZ(k, 1.0, 0.92, 0.75);
+      pos.needsUpdate = size.needsUpdate = col.needsUpdate = true;
+    }
+    // Nombres solo desde lejos (a ras de suelo el plano lejano es corto)
+    for (const l of this.planetLabels) l.visible = h > 0.3;
   }
 
   setMoon(on) { this.moonOn = on; }
@@ -312,14 +415,50 @@ export class Sky {
     if (this.labels) this.labels.visible = this.constellationsOn && h > 0.3;
 
     // Luna (solo cuando la cámara está lejos: hace falta un plano lejano amplio)
-    const { lat, lon, distKm } = moonPosition(date);
-    latLonToVec3(lat, lon, MOON_DIST, this.moon.position);
+    let distKm;
+    if (ephem.ready()) {
+      const mt = this.earth.uniforms.uMoonPos.value;
+      this.moon.position.copy(mt).normalize().multiplyScalar(MOON_DIST);
+      distKm = mt.length() * 6371;
+    } else {
+      const mp = moonPosition(date);
+      latLonToVec3(mp.lat, mp.lon, MOON_DIST, this.moon.position);
+      distKm = mp.distKm;
+    }
     this.moon.lookAt(0, 0, 0);
-    this.moon.visible = this.moonOn && h > 0.3;
+    this.moon.visible = this.moonOn && (h > 0.3 || this.forceMoon);
     this.moonInfo = { distKm, ...moonPhase(date) };
+    this.updatePlanets(date, h);
+  }
+
+  pickPlanet(x, y, radius) {
+    if (!this.planetGroup?.visible || !this.planetData) return null;
+    const p = new THREE.Vector3();
+    let best = null;
+    this.planetData.forEach((pl) => {
+      p.copy(this.camera.position).addScaledVector(pl.dir, 20);
+      const sp = toScreen(p, this.camera, innerWidth, innerHeight);
+      if (sp.behind) return;
+      // ¿lo tapa la Tierra?
+      const o = this.camera.position, b = o.dot(pl.dir), disc = b * b - (o.lengthSq() - 1);
+      if (disc > 0 && -b - Math.sqrt(disc) > 0) return;
+      const d = Math.hypot(sp.x - x, sp.y - y);
+      if (d < radius + 6 && (!best || d < best.d)) best = { d, pl };
+    });
+    if (!best) return null;
+    const { pl } = best;
+    return {
+      dist: best.d,
+      html: `
+        <div class="tt-kicker" style="--c:${pl.color}"><span class="tt-dot"></span>Planeta</div>
+        <div class="tt-title">${pl.name}</div>
+        <div class="tt-meta">Magnitud ${pl.mag.toFixed(1)}${pl.mag < 6 ? ' · visible a simple vista' : ''}<br>A ${Math.round(pl.distMkm).toLocaleString('es-ES')} millones de km de la Tierra</div>`,
+    };
   }
 
   pick(x, y, radius) {
+    const planet = this.pickPlanet(x, y, radius);
+    if (planet) return planet;
     if (!this.moon.visible || !this.moonInfo) return null;
     const { w, h } = { w: innerWidth, h: innerHeight };
     const sp = toScreen(this.moon.position, this.camera, w, h);

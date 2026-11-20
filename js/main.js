@@ -23,6 +23,10 @@ import { WindLayer } from './layers/wind.js';
 import { EonetLayer } from './layers/eonet.js';
 import { PlacePanel } from './place.js';
 import { Tour } from './tour.js';
+import { PhotoLayer } from './layers/photo.js';
+import { Eclipses } from './eclipses.js';
+import * as ephem from './ephemeris.js';
+import { describePlace } from './regions.js';
 
 const IS_MOBILE = matchMedia('(pointer: coarse)').matches || Math.min(innerWidth, innerHeight) < 600;
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -233,8 +237,15 @@ const sky = new Sky({ scene, camera, renderer, earth, time, isMobile: IS_MOBILE 
 
 const sunDir = new THREE.Vector3();
 function updateSun() {
-  const { lat, lon } = subsolarPoint(new Date(time.now()));
-  earth.setSunDirection(latLonToVec3(lat, lon, 1, sunDir));
+  const date = new Date(time.now());
+  if (ephem.ready()) {
+    ephem.sunMoon(date, sunDir, earth.uniforms.uMoonPos.value);
+    earth.setSunDirection(sunDir);
+    earth.updateEclipse(earth.uniforms.uMoonPos.value);
+  } else {
+    const { lat, lon } = subsolarPoint(date);
+    earth.setSunDirection(latLonToVec3(lat, lon, 1, sunDir));
+  }
 }
 updateSun();
 
@@ -248,7 +259,11 @@ const sats = new SatellitesLayer(ctx);
 const aurora = new AuroraLayer(ctx);
 const wind = new WindLayer(ctx);
 const eonet = new EonetLayer(ctx);
-const layers = [clouds, aurora, wind, quakes, eonet, sats, iss];
+const photo = new PhotoLayer(ctx);
+const layers = [photo, clouds, aurora, wind, quakes, eonet, sats, iss];
+// Con la foto real de día, las nubes en directo solo se dibujan de noche (si no, se duplican)
+photo.onChange = () => clouds.setNightOnly(photo.active);
+time.onChange(() => clouds.setNightOnly(photo.active && (time.live || time.span === 'day')));
 for (const l of layers) ui.registerSource(l.id, l.name);
 // Lo imprescindible arranca ya; lo pesado espera a que el planeta esté en pantalla
 quakes.start();
@@ -259,7 +274,8 @@ function startDeferred() {
   deferredStarted = true;
   earth.loadFull();
   sky.load();
-  for (const l of [clouds, aurora, eonet, sats, wind]) l.start();
+  for (const l of [photo, clouds, aurora, eonet, sats, wind]) l.start();
+  ephem.loadAstronomy().catch(() => ui.toast('No se pudo cargar el cálculo de planetas y eclipses', 'warn', 'astro'));
 }
 ui.bindToggles({
   quakes: (on) => quakes.setVisible(on),
@@ -274,6 +290,8 @@ ui.bindToggles({
   eonet: (on) => eonet.setVisible(on),
   clouds: (on) => clouds.setVisible(on),
   constellations: (on) => sky.setConstellations(on),
+  planets: (on) => sky.setPlanets(on),
+  photo: (on) => photo.setVisible(on),
   moon: (on) => sky.setMoon(on),
   terrain: (on) => tiles.setTerrain(on),
   labels: (on) => tiles.setLabels(on),
@@ -290,7 +308,25 @@ document.getElementById('btn-tour').addEventListener('click', () => {
   if (!time.live) time.goLive();
   if (tour.running) tour.stop(); else tour.start();
 });
-window.planeta = { camera, controls, layers, scene, tiles, time, sky, rig, tour, place }; // depuración
+const eclipses = new Eclipses(ctx, { rig, sky });
+document.getElementById('btn-eclipses').addEventListener('click', () => { tour.stop(); eclipses.open(); });
+ui.bindDetail();
+
+// --- Vídeo en directo de la ISS (canal oficial de la NASA en IBM Video; solo se carga al abrirlo)
+const VIDEO_SRC = 'https://video.ibm.com/embed/9408562?html5ui=1&autoplay=true&volume=0';
+function toggleVideo(force) {
+  const panel = document.getElementById('video-panel');
+  const frame = document.getElementById('video-frame');
+  const open = force ?? panel.hidden;
+  panel.hidden = !open;
+  frame.src = open ? VIDEO_SRC : 'about:blank';
+  document.getElementById('btn-video').setAttribute('aria-expanded', String(open));
+  if (open) document.getElementById('video-close').focus();
+}
+document.getElementById('btn-video').addEventListener('click', () => toggleVideo());
+document.getElementById('video-close').addEventListener('click', () => toggleVideo(false));
+
+window.planeta = { camera, controls, layers, scene, tiles, time, sky, rig, tour, place, eclipses, photo }; // depuración
 
 // --- Seguir a la ISS --------------------------------------------------------
 ui.onFollow(() => { tour.stop(); setFollow(!follow); });
@@ -323,10 +359,13 @@ canvas.addEventListener('pointerdown', (e) => {
   down = { x: e.clientX, y: e.clientY, moved: touches.size > 1 };
 });
 canvas.addEventListener('pointerup', (e) => {
-  const tap = down && !down.moved && e.pointerType !== 'mouse';
+  const click = down && !down.moved && e.button === 0;
+  const touch = e.pointerType !== 'mouse';
   down = null;
-  if (tap) {
-    const hit = pickAt(e.clientX, e.clientY, 18);
+  if (!click) return;
+  const hit = pickAt(e.clientX, e.clientY, touch ? 18 : 10);
+  if (hit?.select) { hit.select(); ui.hideTooltip(); return; }
+  if (touch) {
     if (hit) ui.showTooltip(hit.html, e.clientX, e.clientY);
     else ui.hideTooltip();
   }
@@ -350,6 +389,89 @@ addEventListener('resize', () => {
   renderer.setSize(innerWidth, innerHeight);
   composer?.setSize(innerWidth, innerHeight);
 });
+
+// --- Teclado ------------------------------------------------------------------
+// Flechas: girar · Mayús + flechas: inclinar · + / −: zoom · Espacio: reproducir/pausar
+// L: directo · T: tour · F: seguir ISS · V: vídeo ISS · E: eclipses · B: buscar · C: capas · ?: ayuda
+const keys = new Set();
+const isTyping = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable);
+const help = document.getElementById('help-dialog');
+function toggleHelp(force) {
+  const open = force ?? !help.open;
+  if (open && !help.open) help.showModal();
+  if (!open && help.open) help.close();
+}
+document.getElementById('btn-help').addEventListener('click', () => toggleHelp(true));
+document.getElementById('help-close').addEventListener('click', () => toggleHelp(false));
+addEventListener('keydown', (e) => {
+  if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key;
+  if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(k)) {
+    if (e.target.closest?.('.timeline, .layers, dialog')) return; // controles con sus propias flechas
+    keys.add(e.shiftKey ? `tilt-${k}` : k);
+    interrupt();
+    stopIdle();
+    e.preventDefault();
+    return;
+  }
+  const onButton = e.target.closest?.('button, a, summary, label');
+  switch (k) {
+    case '+': case '=': zoomBy(0.7); break;
+    case '-': case '_': zoomBy(1.4); break;
+    case ' ': if (onButton) return; time.togglePlay(); e.preventDefault(); break;
+    case 'l': case 'L': time.goLive(); break;
+    case 't': case 'T': if (!time.live) time.goLive(); if (tour.running) tour.stop(); else tour.start(); break;
+    case 'f': case 'F': tour.stop(); setFollow(!follow); break;
+    case 'v': case 'V': toggleVideo(); break;
+    case 'e': case 'E': tour.stop(); eclipses.open(); break;
+    case 'b': case 'B': case '/': document.getElementById('search-input').focus(); e.preventDefault(); break;
+    case 'c': case 'C': { const d = document.querySelector('.layers'); d.open = !d.open; break; }
+    case '?': toggleHelp(); break;
+    case 'Escape':
+      tour.stop();
+      ui.hideDetail();
+      ui.hideTooltip();
+      toggleVideo(false);
+      break;
+    default: return;
+  }
+});
+addEventListener('keyup', (e) => { keys.delete(e.key); keys.delete(`tilt-${e.key}`); });
+addEventListener('blur', () => keys.clear());
+
+const _axis = new THREE.Vector3();
+function applyKeys(dt, h, ground) {
+  if (!keys.size) return;
+  const speed = THREE.MathUtils.clamp((h - ground) * 0.6, 0.00004, 1.2) * dt; // más lento cerca del suelo
+  const up = camera.position.clone().normalize();
+  for (const k of keys) {
+    if (k === 'ArrowLeft' || k === 'ArrowRight') {
+      camera.position.applyAxisAngle(yAxis, (k === 'ArrowLeft' ? -1 : 1) * speed);
+    } else if (k === 'ArrowUp' || k === 'ArrowDown') {
+      _axis.crossVectors(up, yAxis).normalize();
+      if (_axis.lengthSq() < 0.5) continue;
+      const lat = Math.asin(up.y);
+      const step = (k === 'ArrowUp' ? 1 : -1) * speed;
+      if (Math.abs(lat + step) < 1.45) camera.position.applyAxisAngle(_axis, -step);
+    } else if (k === 'tilt-ArrowUp' || k === 'tilt-ArrowDown') {
+      userTilt = THREE.MathUtils.clamp((userTilt ?? tilt) + (k === 'tilt-ArrowUp' ? 1 : -1) * dt * 0.8, 0, maxTilt(h));
+    }
+  }
+}
+
+// Anuncio para lectores de pantalla de qué se está viendo (cuando la cámara se para)
+let lastAnnounce = 0, lastCamForAnnounce = new THREE.Vector3();
+function announceView(now, h) {
+  if (now - lastAnnounce < 2500) return;
+  if (camera.position.distanceTo(lastCamForAnnounce) < 1e-4 * Math.max(h, 0.01)) return;
+  if (hTarget != null || rig.flight || keys.size) return;
+  lastAnnounce = now;
+  lastCamForAnnounce.copy(camera.position);
+  const { lat, lon } = vec3ToLatLon(camera.position);
+  const where = describePlace(lat, lon, earth.isWater(lat, lon)).name;
+  const km = Math.round(h * 6371);
+  ui.announce(`Vista sobre ${where}, a ${km.toLocaleString('es-ES')} kilómetros de altura.`);
+}
 
 // --- Bucle ------------------------------------------------------------------
 const clock = new THREE.Clock();
@@ -377,6 +499,8 @@ renderer.setAnimationLoop(() => {
   updateSun();
   for (const l of layers) l.update(dt);
   place.update();
+  eclipses.update();
+  earth.uniforms.uTime.value += dt;
 
   // Terreno bajo la cámara (para no atravesar montañas)
   const sub = vec3ToLatLon(camera.position);
@@ -414,6 +538,7 @@ renderer.setAnimationLoop(() => {
     } else {
       camera.position.normalize();
       if (rig.driftSpeed) camera.position.applyAxisAngle(yAxis, rig.driftSpeed * dt);
+      applyKeys(dt, h, ground);
     }
     if (h > 0.3) userTilt = null;
     tiltTarget = userTilt ?? autoTilt(h);
@@ -454,6 +579,8 @@ renderer.setAnimationLoop(() => {
 
   if (composer) composer.render();
   else renderer.render(scene, camera);
+  eclipses.renderInset(renderer);
+  announceView(performance.now(), h);
 
   if (!started && texturesReady) startIntro();
 

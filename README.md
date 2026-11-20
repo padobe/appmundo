@@ -8,6 +8,13 @@ Un globo terráqueo 3D con lo que está pasando en el mundo **ahora mismo**:
 - **Satélites en directo**: brillantes, GPS/navegación, geoestacionarios y Starlink (este último apagado por defecto), calculados con SGP4 en un Web Worker.
 - **Auroras** (previsión NOAA OVATION), **viento** con partículas (apagado por defecto), **nubes reales**, **terremotos** de 24 h, **desastres activos** de NASA (incendios, tormentas con su trayectoria, volcanes…) y la **ISS** con su estela.
 - **Desde aquí**: escribe una calle, ciudad o zona y verás su hora local, salida y puesta del sol, la Luna, el tiempo, la probabilidad de aurora, lo que ha pasado cerca y los próximos pasos visibles de la ISS. No usa tu ubicación.
+- **Foto real de ayer** (NASA GIBS, satélites VIIRS) como imagen del planeta, con las nubes, la nieve y el humo de verdad.
+- **Planetas y Sol** en su posición real, **eclipses** (lista de los próximos, viaje al momento exacto, sombra de la Luna sobre la Tierra, línea central y visor de la Luna en los lunares).
+- **Atmósfera más realista**: luz cálida con el sol bajo, contraluz al amanecer visto desde el espacio, sombra de las nubes y oleaje en el brillo del mar.
+- **Repetición de un año**: estaciones, Luna, planetas y terremotos M6+ del último año.
+- **Terremotos más ricos**: clic para ver profundidad en 3D, ondas P y S, alerta PAGER, indicador de tsunami, intensidad y tiempos de llegada de las ondas a tu lugar.
+- **Vídeo en directo de la ISS** (canal oficial de la NASA).
+- **Teclado y accesibilidad**: atajos (pulsa ?), enlace para saltar al buscador, anuncios para lectores de pantalla.
 - **Tour cinematográfico**: un recorrido automático por lo más interesante del momento.
 - **Repetición de 24 h** con la línea de tiempo, y un panel de **capas** para encender y apagar cada cosa.
 
@@ -40,6 +47,10 @@ Basta con activar GitHub Pages desde la rama `main` (carpeta raíz). No hay back
 | Tiempo de un lugar | Open-Meteo | 1 por búsqueda |
 | Búsqueda de lugares | Photon (OpenStreetMap) | 1 por búsqueda, solo al pulsar Intro |
 | Nubes | live-cloud-maps | 1 cada hora |
+| Foto de ayer | NASA GIBS | 1 por visita |
+| Terremotos del año | USGS FDSN | 1 al abrir la repetición de un año |
+| Planetas y eclipses | astronomy-engine (MIT) | se calcula en el navegador: sin peticiones |
+| Vídeo de la ISS | NASA (IBM Video) | solo al abrir el panel |
 | Imágenes y relieve | Esri World Imagery, AWS Terrain Tiles | teselas según lo que se ve |
 
 Para refrescar de vez en cuando la copia de respaldo de órbitas: `node scripts/update-tle.mjs`.

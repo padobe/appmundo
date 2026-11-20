@@ -59,7 +59,9 @@
   <link rel="modulepreload" href="js/layers/eonet.js">
 </head>
 <body>
-  <canvas id="scene" aria-label="Globo terráqueo interactivo"></canvas>
+  <a class="skip-link" href="#search-input">Saltar al buscador</a>
+  <canvas id="scene" tabindex="0" role="application" aria-label="Globo terráqueo interactivo. Flechas para girar, más y menos para acercar, Mayúsculas y flechas para inclinar. Pulsa la tecla de interrogación para ver todos los atajos." aria-describedby="sr-live"></canvas>
+  <div id="sr-live" class="sr-only" aria-live="polite"></div>
   <div class="vignette" aria-hidden="true"></div>
 
   <header class="brand panel-free">
@@ -77,7 +79,7 @@
 
   <section class="hud" aria-label="Datos en vivo">
     <div class="stat">
-      <div class="stat-label"><span class="swatch quake"></span>Terremotos · 24 h</div>
+      <div class="stat-label"><span class="swatch quake"></span><span id="q-label">Terremotos · 24 h</span></div>
       <div class="stat-value" id="q-count">—</div>
       <div class="stat-sub" id="q-sub">Cargando datos de USGS…</div>
     </div>
@@ -85,6 +87,10 @@
       <div class="stat-label"><span class="swatch iss"></span>La ISS sobrevuela</div>
       <div class="stat-value stat-value-text" id="iss-region">—</div>
       <div class="stat-sub" id="iss-sub">Buscando la estación…</div>
+      <button id="btn-video" class="stat-btn" type="button" aria-expanded="false" aria-controls="video-panel">
+        <svg viewBox="0 0 16 16" width="11" height="11" aria-hidden="true"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>
+        Vídeo en directo
+      </button>
     </div>
   </section>
 
@@ -100,6 +106,10 @@
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/></svg>
         <span>Tour</span>
       </button>
+      <button id="btn-eclipses" class="btn btn-icon" type="button" aria-label="Próximos eclipses" title="Eclipses (E)">
+        <svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><circle cx="10" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="14" cy="12" r="7" fill="currentColor" opacity=".85"/></svg>
+      </button>
+      <button id="btn-help" class="btn btn-icon" type="button" aria-label="Atajos de teclado" title="Atajos de teclado (?)">?</button>
       <button id="btn-follow" class="btn" aria-pressed="false" type="button">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.5 3"/></svg>
         <span class="btn-text">Seguir a la ISS</span>
@@ -155,7 +165,7 @@
           <label class="layer-row">
             <input type="checkbox" data-layer="clouds" checked>
             <span class="switch" aria-hidden="true"></span>
-            <span class="layer-name">Nubes</span>
+            <span class="layer-name">Nubes en directo</span>
             <span class="layer-meta">cada 3 h</span>
           </label>
           <label class="layer-row">
@@ -167,6 +177,12 @@
         </div>
         <div class="layer-group">
           <div class="group-title">Cielo</div>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="planets" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Planetas y Sol</span>
+            <span class="layer-meta">posición real</span>
+          </label>
           <label class="layer-row">
             <input type="checkbox" data-layer="constellations" checked>
             <span class="switch" aria-hidden="true"></span>
@@ -181,6 +197,12 @@
         </div>
         <div class="layer-group">
           <div class="group-title">Mapa</div>
+          <label class="layer-row">
+            <input type="checkbox" data-layer="photo" checked>
+            <span class="switch" aria-hidden="true"></span>
+            <span class="layer-name">Foto de satélite de ayer</span>
+            <span class="layer-meta" id="photo-date">NASA</span>
+          </label>
           <label class="layer-row">
             <input type="checkbox" data-layer="terrain" checked>
             <span class="switch" aria-hidden="true"></span>
@@ -212,6 +234,47 @@
     <button id="place-3d" class="btn pl-3d" type="button">Ver en 3D desde cerca</button>
   </aside>
 
+  <aside id="detail-card" class="place-card detail-card" tabindex="-1" aria-label="Detalles">
+    <button id="detail-close" class="pl-close detail-close" type="button" aria-label="Cerrar">×</button>
+    <div id="detail-body"></div>
+  </aside>
+
+  <section id="video-panel" class="video-panel" hidden aria-label="Vídeo en directo desde la ISS">
+    <div class="vp-head">
+      <span><span class="live-dot"></span>En directo · NASA</span>
+      <span class="vp-actions">
+        <a href="https://plus.nasa.gov/" target="_blank" rel="noopener">NASA+ ↗</a>
+        <button id="video-close" class="pl-close" type="button" aria-label="Cerrar el vídeo">×</button>
+      </span>
+    </div>
+    <div class="vp-frame"><iframe id="video-frame" title="Emisión en directo de la NASA" src="about:blank" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>
+    <p class="vp-note">Canal oficial de la NASA desde la estación. Si pone «off-air», la ISS está sin conexión con tierra en este momento (pasa varias veces al día); si está en la cara nocturna, la imagen se verá negra.</p>
+  </section>
+
+  <div id="moon-inset" class="moon-inset" aria-hidden="true"><span>La Luna, ahora</span></div>
+
+  <dialog id="help-dialog" class="help-dialog" aria-labelledby="help-title">
+    <div class="help-head">
+      <h2 id="help-title">Atajos de teclado</h2>
+      <button id="help-close" class="pl-close" type="button" aria-label="Cerrar">×</button>
+    </div>
+    <dl class="help-list">
+      <dt><kbd>←</kbd> <kbd>→</kbd> <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Girar el planeta</dd>
+      <dt><kbd>Mayús</kbd> + <kbd>↑</kbd> <kbd>↓</kbd></dt><dd>Inclinar la vista (de cerca)</dd>
+      <dt><kbd>+</kbd> <kbd>−</kbd></dt><dd>Acercar y alejar</dd>
+      <dt><kbd>Espacio</kbd></dt><dd>Reproducir o pausar la línea de tiempo</dd>
+      <dt><kbd>L</kbd></dt><dd>Volver al directo</dd>
+      <dt><kbd>T</kbd></dt><dd>Tour cinematográfico</dd>
+      <dt><kbd>F</kbd></dt><dd>Seguir a la ISS</dd>
+      <dt><kbd>V</kbd></dt><dd>Vídeo en directo de la ISS</dd>
+      <dt><kbd>E</kbd></dt><dd>Próximos eclipses</dd>
+      <dt><kbd>B</kbd> o <kbd>/</kbd></dt><dd>Buscar un lugar</dd>
+      <dt><kbd>C</kbd></dt><dd>Mostrar u ocultar las capas</dd>
+      <dt><kbd>Esc</kbd></dt><dd>Cerrar paneles y salir del tour</dd>
+    </dl>
+    <p class="help-note">Con el ratón: arrastra para girar, rueda para acercar al punto señalado, doble clic para acercar, clic derecho o Ctrl + arrastrar para inclinar, y clic en un terremoto para ver sus detalles.</p>
+  </dialog>
+
   <div id="tour-caption" class="tour-caption" aria-live="polite">
     <div class="tour-dots" id="tour-dots"></div>
     <div class="tour-kicker" id="tour-kicker"></div>
@@ -221,13 +284,18 @@
   </div>
 
   <div class="timeline" role="group" aria-label="Línea de tiempo">
+    <div class="tl-spans" role="group" aria-label="Periodo">
+      <button type="button" data-span="day" aria-pressed="true">24 h</button>
+      <button type="button" data-span="year" aria-pressed="false">1 año</button>
+    </div>
+    <span class="tl-event" id="tl-event"></span>
     <button id="tl-play" class="tl-btn" type="button" data-state="play" aria-label="Reproducir las últimas 24 h">
       <svg class="i-play" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>
       <svg class="i-pause" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2.5h3v11H4zM9 2.5h3v11H9z" fill="currentColor"/></svg>
     </button>
     <div class="tl-track">
-      <div class="tl-ticks" aria-hidden="true"><span>−24 h</span><span>−12 h</span><span>ahora</span></div>
-      <input id="tl-range" type="range" min="0" max="1000" step="1" value="1000" aria-label="Momento de las últimas 24 horas">
+      <div class="tl-ticks" id="tl-ticks" aria-hidden="true"><span>−24 h</span><span>−12 h</span><span>ahora</span></div>
+      <input id="tl-range" type="range" min="0" max="1000" step="1" value="1000" aria-label="Momento de la repetición">
     </div>
     <span class="tl-label" id="tl-label">En directo</span>
     <button id="tl-live" class="tl-live" type="button" aria-pressed="true"><span class="live-dot"></span>Directo</button>

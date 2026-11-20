@@ -20,6 +20,7 @@ const fragment = /* glsl */ `
   uniform sampler2D map;
   uniform vec3 sunDir;
   uniform float uFade;
+  uniform float uNightOnly;   // con la foto real de día activa, solo se ven de noche
   varying vec2 vUv;
   varying vec3 vNormalW;
   void main() {
@@ -31,6 +32,8 @@ const fragment = /* glsl */ `
     vec3 dayCol = vec3(0.96, 0.97, 1.0) * (0.22 + 0.58 * clamp(s, 0.0, 1.0));
     vec3 col = mix(vec3(0.012, 0.018, 0.03), dayCol, lit);
     col = mix(col, vec3(1.0, 0.55, 0.3), exp(-pow(s / 0.045, 2.0)) * 0.14 * smoothstep(0.45, 0.85, c));  // solo las nubes densas se tiñen al atardecer
+    a *= mix(1.0, 1.0 - smoothstep(-0.05, 0.25, s), uNightOnly);
+    if (a < 0.01) discard;
     gl_FragColor = vec4(col, a * mix(0.55, 1.0, lit));
     #include <colorspace_fragment>
   }
@@ -46,7 +49,9 @@ export class CloudsLayer {
       map: { value: new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1) },
       sunDir: ctx.earth.uniforms.sunDir,
       uFade: { value: 0 },
+      uNightOnly: { value: 0 },
     };
+    this.nightOnly = 0;
     this.uniforms.map.value.needsUpdate = true;
     this.mesh = new THREE.Mesh(
       new THREE.SphereGeometry(1.008, ctx.isMobile ? 96 : 144, ctx.isMobile ? 64 : 96),
@@ -80,6 +85,7 @@ export class CloudsLayer {
         t.anisotropy = 4;
         const old = this.uniforms.map.value;
         this.uniforms.map.value = t;
+        this.ctx.earth.uniforms.cloudMap.value = t; // para las sombras de las nubes en el suelo
         old.dispose();
         this.loaded = true;
         this.ctx.ui.sourceOk(this.id);
@@ -90,14 +96,21 @@ export class CloudsLayer {
   }
 
   setVisible(on) { this.visible = on; }
+  setNightOnly(on) { this.nightOnly = on ? 1 : 0; }
 
   update(dt) {
     // Aparece suavemente al cargar y se desvanece al acercarse al suelo
-    const target = this.loaded && this.visible ? 1 : 0;
+    // Las nubes son de ahora: al viajar a otra fecha (año, eclipses) se ocultan
+    const t = this.ctx.time;
+    const target = this.loaded && this.visible && (t.live || t.span === 'day') ? 1 : 0;
     this.fadeIn += (target - this.fadeIn) * Math.min(1, dt * 2);
     const h = this.ctx.camera.position.length() - 1;
     const near = THREE.MathUtils.smoothstep(h, 0.12, 0.5);
     this.uniforms.uFade.value = this.fadeIn * near;
+    const n = this.uniforms.uNightOnly;
+    n.value += (this.nightOnly - n.value) * Math.min(1, dt * 2);
+    // sombras en el suelo solo si estas nubes se ven de día
+    this.ctx.earth.uniforms.uCloudShadow.value = this.fadeIn * near * (1 - n.value);
     this.mesh.visible = this.uniforms.uFade.value > 0.01;
   }
 }

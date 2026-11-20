@@ -117,11 +117,12 @@ export class EonetLayer {
       if (!pt) continue;
       const pos = latLonToVec3(pt[1], pt[0], 1.006);
       const tex = this.textures[catId] || (this.textures[catId] = icon(cat));
-      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, sizeAttenuation: false }));
+      // Sin depth test: no se corta con las nubes ni con el borde del planeta (la ocultación se calcula aparte)
+      const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: false, sizeAttenuation: false }));
       s.position.copy(pos);
       const big = catId === 'severeStorms' || catId === 'volcanoes';
       s.scale.setScalar(big ? 0.028 : catId === 'wildfires' ? 0.012 : 0.02);
-      s.renderOrder = 4;
+      s.renderOrder = 6;
       this.group.add(s);
 
       // Trayectoria de las tormentas
@@ -134,7 +135,7 @@ export class EonetLayer {
         this.group.add(line);
       }
       const mag = last.magnitudeValue != null ? `${last.magnitudeValue} ${last.magnitudeUnit || ''}`.trim() : '';
-      this.items.push({ pos, ev, cat, date: last.date, mag, lat: pt[1], lon: pt[0], catId });
+      this.items.push({ pos, ev, cat, date: last.date, mag, lat: pt[1], lon: pt[0], catId, sprite: s });
     }
   }
 
@@ -142,6 +143,16 @@ export class EonetLayer {
 
   update() {
     this.group.visible = this.visible && this.ctx.time.live;
+    if (!this.group.visible) return;
+    const cam = this.ctx.camera.position;
+    const n = new THREE.Vector3(), v = new THREE.Vector3();
+    for (const it of this.items) {
+      n.copy(it.pos).normalize();
+      v.copy(cam).sub(it.pos).normalize();
+      const f = THREE.MathUtils.smoothstep(n.dot(v), -0.02, 0.1); // tras el horizonte → invisible
+      it.sprite.material.opacity = f;
+      it.sprite.visible = f > 0.01;
+    }
   }
 
   pick(x, y, radius) {
