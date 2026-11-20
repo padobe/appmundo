@@ -73,6 +73,9 @@ const fragment = /* glsl */ `
   uniform float uAlpha;     // aparición gradual de la tesela
   uniform vec3 uFogColor;
   uniform float uFog;
+  uniform sampler2D uDecal;  // zona de un evento pintada sobre el terreno (lon/lat lineal)
+  uniform vec4 uDecalBox;    // x0, y0, x1, y1 en coordenadas geoUv
+  uniform float uDecalOn;
   ${SHADE_PARS}
   varying vec2 vUv;
   varying vec2 vGeoUv;
@@ -100,6 +103,14 @@ const fragment = /* glsl */ `
     vec3 col = shadeEarthT(day, vGeoUv, N, Nt, V);
     vec4 lab = texture2D(labelMap, iuv);
     col = mix(col, lab.rgb, lab.a * uLabels * 0.92);
+    if (uDecalOn > 0.5) {
+      vec2 dq = (vGeoUv - uDecalBox.xy) / (uDecalBox.zw - uDecalBox.xy);
+      if (dq.x >= 0.0 && dq.x <= 1.0 && dq.y >= 0.0 && dq.y <= 1.0) {
+        vec4 d = texture2D(uDecal, dq);
+        float lum = dot(col, vec3(0.3, 0.59, 0.11));
+        col = mix(col, d.rgb * clamp(lum * 1.7, 0.65, 1.15), d.a); // sigue la luz y la sombra del relieve
+      }
+    }
     // Bruma atmosférica con la distancia (solo cerca del suelo)
     float distKm = length(cameraPosition - vPosW) * 6371.0;
     col = mix(col, uFogColor, (1.0 - exp(-distKm / 420.0)) * uFog);
@@ -175,6 +186,7 @@ export class SatelliteTiles {
     this.exag = { value: TERRAIN_EXAGGERATION };
     this.fogColor = { value: new THREE.Color(0.6, 0.75, 0.95) };
     this.fog = { value: 0 };
+    this.decal = { map: { value: EMPTY }, box: { value: new THREE.Vector4() }, on: { value: 0 } };
     this.enabled = true;
     this.group = new THREE.Group();
     scene.add(this.group);
@@ -192,6 +204,20 @@ export class SatelliteTiles {
     this.canvas = document.createElement('canvas');
     this.canvas.width = this.canvas.height = 256;
     this.ctx2d = this.canvas.getContext('2d', { willReadFrequently: true });
+  }
+
+  /** Pinta un lienzo sobre el terreno (box en grados). setDecal(null) lo quita; setDecal(c, box, true) solo lo repinta. */
+  setDecal(canvas, box, repaint = false) {
+    if (!canvas) { this.decal.on.value = 0; return; }
+    if (!repaint || this.decal.map.value === EMPTY || this.decal.map.value.image !== canvas) {
+      if (this.decal.map.value !== EMPTY) this.decal.map.value.dispose();
+      const t = new THREE.CanvasTexture(canvas);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.anisotropy = this.aniso;
+      this.decal.map.value = t;
+    } else this.decal.map.value.needsUpdate = true;
+    this.decal.box.value.set((box.w + 180) / 360, (box.s + 90) / 180, (box.e + 180) / 360, (box.n + 90) / 180);
+    this.decal.on.value = 1;
   }
 
   setLabels(on) { this.labels.value = on ? 1 : 0; }
@@ -434,6 +460,9 @@ export class SatelliteTiles {
         uLabels: this.labels,
         uFogColor: this.fogColor,
         uFog: this.fog,
+        uDecal: this.decal.map,
+        uDecalBox: this.decal.box,
+        uDecalOn: this.decal.on,
         nightMap: this.shared.nightMap,
         waterMap: this.shared.waterMap,
         sunDir: this.shared.sunDir,

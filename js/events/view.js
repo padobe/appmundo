@@ -6,7 +6,7 @@ import { escapeHtml, timeAgo } from '../net.js';
 import { TYPES, ALERT } from './gdacs.js';
 import { getModule } from './modules.js';
 import { EventChart } from './chart.js';
-import { disposeTree } from './draw.js';
+import { disposeTree, decalBox, paintDecal } from './draw.js';
 
 const HOUR = 3600000;
 const $ = (id) => document.getElementById(id);
@@ -56,6 +56,8 @@ export class EventView {
     close.exclusive = true; // si otra ficha ocupa el panel, la vista se recoge sola
     ui.showDetail(this.shell(evt, '<p class="pl-loading">Cargando datos del evento…</p>'), close);
     this.bindBack();
+    document.body.classList.add('event-mode');
+    this.ctx.fogScale = 0.25; // menos bruma: la imagen se ve nítida y con relieve
 
     const { start, end } = this.win;
     time.travel({
@@ -67,7 +69,7 @@ export class EventView {
     // Vuelo provisional mientras llegan los datos; se afina con el encuadre real
     let state = 'flying';
     const h0 = DEFAULT_H[evt.type] ?? 0.1;
-    this.rig.flyTo({ lat: evt.lat, lon: evt.lon, h: h0, tilt: this.tiltFor(h0), duration: 3 })
+    this.rig.flyTo({ ...this.aim(evt.lat, evt.lon, h0), duration: 3 })
       .then((ok) => { if (state === 'flying') state = ok ? 'arrived' : 'cancelled'; });
 
     const mod = getModule(evt.type);
@@ -83,45 +85,61 @@ export class EventView {
     this.group = new THREE.Group();
     try {
       this.layers = mod.layers(data, evt) || [];
-      for (const l of this.layers) this.group.add(l.object);
     } catch (e) {
       console.warn('[evento] capas', e);
       data.errors = [...(data.errors || []), 'No se pudo dibujar la geometría del evento.'];
     }
+    let box = null;
+    try { box = mod.frame?.(data, evt) || null; } catch { /* encuadre por defecto */ }
+
+    // Zonas pequeñas: se pintan sobre las teselas (siguen el relieve). Zonas grandes: líneas 3D.
+    const dl = this.layers.filter((l) => l.decal);
+    const dbox = dl.length ? decalBox(dl) : null;
+    const span = dbox ? Math.max(dbox.n - dbox.s, (dbox.e - dbox.w) * Math.cos(((dbox.n + dbox.s) / 2) * Math.PI / 180)) : 99;
+    this.decalMode = !!dbox && span <= 6 && !!this.ctx.tiles;
+    this.decalBox = this.decalMode ? dbox : null;
+    this.decalKey = '';
+    this.off = new Set();
+    for (const l of this.layers) if (!(this.decalMode && l.decal)) this.group.add(l.object);
     this.ctx.scene.add(this.group);
     this.render(evt, data, mod);
     this.refresh(true);
 
     if (state !== 'cancelled') {
-      let box = null;
-      try { box = mod.frame?.(data, evt) || null; } catch { /* encuadre por defecto */ }
       const view = this.framing(box, evt);
       state = 'refit';
       this.rig.flyTo({ ...view, duration: 2.5 });
     }
   }
 
-  tiltFor(h) { return 0.9 * (1 - THREE.MathUtils.smoothstep(h, 0.02, 0.15)); }
+  tiltFor(h) { return 1.05 * (1 - THREE.MathUtils.smoothstep(h, 0.03, 0.22)); }
 
   framing(box, evt) {
-    if (!box) return { lat: evt.lat, lon: evt.lon, h: DEFAULT_H[evt.type] ?? 0.1, tilt: 0 };
+    if (!box) { const h = DEFAULT_H[evt.type] ?? 0.1; return this.aim(evt.lat, evt.lon, h); }
     const lat = (box.s + box.n) / 2;
     let lon = (box.w + box.e) / 2;
     lon = ((lon + 540) % 360) - 180;
     const span = Math.max(box.n - box.s, (box.e - box.w) * Math.cos((lat * Math.PI) / 180));
     const floor = (DEFAULT_H[evt.type] ?? 0.1) * 0.5;
     const h = THREE.MathUtils.clamp(((span * Math.PI) / 180) * 2.6, floor, 0.9);
-    return { lat, lon, h, tilt: this.tiltFor(h) };
+    return this.aim(lat, lon, h);
+  }
+
+  /** Con la cámara inclinada la vista apunta por delante del punto bajo ella: se retrasa hacia el sur para centrar el evento. */
+  aim(lat, lon, h) {
+    const tilt = this.tiltFor(h);
+    const back = Math.min(((h * Math.tan(tilt)) * 180) / Math.PI, 40);
+    return { lat: THREE.MathUtils.clamp(lat - back, -85, 85), lon, h, tilt };
   }
 
   shell(evt, inner) {
     const a = ALERT[evt.alert];
     return `
+      <div class="ev-top"><button id="ev-back" class="btn ev-back" type="button">← Volver al globo</button></div>
       <div class="pl-kicker" style="--c:${a.color}">${escapeHtml(TYPES[evt.type]?.label || 'Evento')} · <span class="badge">${escapeHtml(a.label)}</span></div>
       <div class="pl-name">${escapeHtml(evt.name)}</div>
       <div class="pl-rest">${escapeHtml(evt.country)}</div>
-      ${inner}
-      <div class="ev-actions"><button id="ev-back" class="btn" type="button">Volver al globo</button></div>`;
+      ${inner}`;
   }
 
   bindBack() {
@@ -159,10 +177,27 @@ export class EventView {
     const errs = (data.errors || []).map((e) => `<p class="ev-warn">${escapeHtml(e)}</p>`).join('');
     const retry = data.failed ? '<button id="ev-retry" class="btn" type="button">Reintentar</button>' : '';
     const notes = panel.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('');
-    const body = `<div class="pl-body">${rows.join('')}</div>${errs}${chart}<ul class="ev-notes">${notes}<li>La reproducción usa la hora del evento y mueve también el sol y las nubes.</li></ul>
+    const stats = (panel.stats || []).length
+      ? `<div class="ev-stats">${panel.stats.map(([v, l]) => `<div><b>${escapeHtml(v)}</b><span>${escapeHtml(l)}</span></div>`).join('')}</div>` : '';
+    const labels = [...new Set(this.layers.map((l) => l.label).filter(Boolean))];
+    const toggles = labels.length
+      ? `<div class="ev-layers"><div class="ev-sec">Capas</div>${labels.map((l) => `<label class="ev-tog"><input type="checkbox" data-ev-layer="${escapeHtml(l)}" checked><span class="switch" aria-hidden="true"></span>${escapeHtml(l)}</label>`).join('')}</div>` : '';
+    const body = `${stats}<div class="pl-body">${rows.join('')}</div>${toggles}${errs}${chart}<ul class="ev-notes">${notes}<li>La reproducción usa la hora del evento y mueve también el sol y las nubes.</li></ul>
       <div class="ev-actions">${retry}${evt.reportUrl ? `<a class="btn" href="${escapeHtml(evt.reportUrl)}" target="_blank" rel="noopener">Informe GDACS ↗</a>` : ''}</div>`;
     $('detail-body').innerHTML = this.shell(evt, body);
     this.bindBack();
+    for (const cb of document.querySelectorAll('[data-ev-layer]')) {
+      cb.addEventListener('change', () => {
+        if (cb.checked) this.off.delete(cb.dataset.evLayer); else this.off.add(cb.dataset.evLayer);
+        this.decalKey = '';
+        this.refresh(true);
+      });
+    }
+    const lg = $('ev-legend');
+    if (lg) {
+      lg.innerHTML = '<div class="ev-sec">Leyenda</div>' + (panel.legend || []).map(([c, t]) => `<div class="ev-lg"><i style="background:${escapeHtml(c)}"></i>${escapeHtml(t)}</div>`).join('');
+      lg.hidden = !(panel.legend || []).length;
+    }
     $('ev-retry')?.addEventListener('click', () => this.open(evt));
 
     this.chart = null;
@@ -187,7 +222,20 @@ export class EventView {
     this.lastUpdate = now;
     const { time } = this.ctx;
     const t = time.live ? Date.now() : time.now();
-    for (const l of this.layers) l.update?.(t);
+    for (const l of this.layers) {
+      l.update?.(t);
+      if (this.off.has(l.label)) { l.visible = false; if (l.object) l.object.visible = false; }
+    }
+    if (this.decalMode) {
+      const on = this.layers.filter((l) => l.decal && l.visible);
+      const key = on.map((l) => this.layers.indexOf(l)).join(',');
+      if (key !== this.decalKey) {
+        this.decalKey = key;
+        this.decalCanvas ||= document.createElement('canvas');
+        paintDecal(this.decalCanvas, this.decalBox, on);
+        this.ctx.tiles.setDecal(this.decalCanvas, this.decalBox, true);
+      }
+    }
     this.chart?.setCursor(t);
   }
 
@@ -200,6 +248,12 @@ export class EventView {
     this.group = null;
     this.layers = [];
     this.chart = null;
+    this.decalMode = false;
+    this.ctx.tiles?.setDecal(null);
+    this.ctx.fogScale = 1;
+    document.body.classList.remove('event-mode');
+    const lg = $('ev-legend');
+    if (lg) lg.hidden = true;
     if (!this.evt) return;
     this.evt = null;
     this.layer.focus(null);

@@ -2,14 +2,15 @@
 //   { type,
 //     loadData(evt)            → Promise<data>   (geometría y datos extra; solo se llama al abrir el evento)
 //     frame(data, evt)         → { w, e, s, n } | null   (encuadre de la cámara)
-//     layers(data, evt)        → [{ id, label, object, update?(t) }]   (objetos three.js; update recibe la hora simulada en ms)
-//     panel(data, evt)         → { rows: [[clave, html]], notes: [texto] }
+//     layers(data, evt)        → [{ id, label, object, decal?, update?(t) }]   (update recibe la hora simulada en ms;
+//                                 las capas de área (areaLayer) se pintan sobre el terreno si la zona es pequeña)
+//     panel(data, evt)         → { stats: [[valor, etiqueta]], legend: [[color, texto]], rows: [[clave, html]], notes: [texto] }
 //     series(data, evt)        → [{ label, unit, color, points: [{ t, v, forecast }] }] }
 // Fases siguientes añaden módulos (FIRMS, USGS, GIBS…) con la misma forma.
 import * as THREE from 'three';
 import { fetchJSON, escapeHtml } from '../net.js';
 import { ALERT, utc } from './gdacs.js';
-import { polygonsOf, bboxOf, lineObject, fillObject, pointObject } from './draw.js';
+import { polygonsOf, bboxOf, areaLayer, pointObject } from './draw.js';
 import { latLonToVec3 } from '../geo.js';
 
 const DAY = 86400000;
@@ -39,6 +40,8 @@ const GENERIC_NOTES = {
   VO: ['GDACS publica el centroide del volcán; no hay polígono de afectación.'],
 };
 
+const AREA_LABEL = { EQ: 'Radio de referencia', FL: 'Área afectada', WF: 'Área quemada', VO: 'Zona', DR: 'Zona' };
+
 function genericModule(type) {
   return {
     type,
@@ -50,33 +53,38 @@ function genericModule(type) {
     layers(data, evt) {
       const color = ALERT[evt.alert].color;
       const out = [];
-      for (const p of polys(data, () => true)) {
-        const global = p.f.properties.Class === 'Poly_Global';
-        const g = new THREE.Group();
-        g.add(lineObject(p.outer, { color, opacity: global ? 0.3 : 0.95, dashed: global }));
-        if (!global) { const fill = fillObject(p, { color, opacity: 0.18 }); if (fill) g.add(fill); }
-        out.push({ id: p.f.properties.Class, object: g, update(t) { g.visible = t >= evt.from; } });
-      }
+      const gate = (t) => type !== "EQ" || t >= evt.from; // el área de incendios e inundaciones es la última publicada: no aparece "en un instante"
+      const main = polys(data, (c) => c !== 'Poly_Global');
+      const glob = polys(data, (c) => c === 'Poly_Global');
+      if (main.length) out.push(areaLayer('area', AREA_LABEL[type], main, { color, fill: 0.28, line: 0.95 }, gate));
+      if (glob.length) out.push(areaLayer('global', 'Área global (referencia)', glob, { color, fill: 0, line: 0.35, dashed: true, frame: false }, gate));
       const pt = pointObject(evt.lat, evt.lon, { color: '#ffffff', size: 9 });
-      out.push({ id: 'centroid', object: pt, update(t) { pt.visible = t >= evt.from; } });
+      out.push({ id: 'centroid', label: 'Centroide', object: pt, update(t) { pt.visible = gate(t); } });
       return out;
     },
     panel(data, evt) {
       const rows = [];
+      const stats = [];
       const d = data.details;
       const sev = evt.severity;
+      const days = Math.max(1, Math.ceil((Math.min(evt.to, Date.now()) - evt.from) / DAY));
       if (type === 'EQ' && d?.earthquakedetails) {
         const q = d.earthquakedetails;
-        if (q.magnitude) rows.push(row('Magnitud', `M ${escapeHtml(q.magnitude)}`));
-        if (q.depth) rows.push(row('Profundidad', `${escapeHtml(q.depth)} km`));
-        if (q.rapidpopdescription) rows.push(row('Expuestos', `${escapeHtml(q.rapidpopdescription)}<small>estimación de GDACS</small>`));
+        if (q.magnitude) stats.push([Number(q.magnitude).toLocaleString('es-ES', { minimumFractionDigits: 1 }), 'magnitud']);
+        if (q.depth) stats.push([Math.round(Number(q.depth)) + ' km', 'profundidad']);
+        stats.push([new Date(evt.from).toISOString().slice(11, 16), 'hora UTC']);
+        if (q.rapidpopdescription) rows.push(row('Expuestos', escapeHtml(q.rapidpopdescription) + '<small>estimación de GDACS</small>'));
       } else if (sev?.severitytext && Number(sev.severity) > 0) {
+        stats.push([Math.round(Number(sev.severity)).toLocaleString('es-ES'), (sev.severityunit || '') + ' según GDACS']);
+        if (days > 1) stats.push([String(days), 'días de evento']);
         rows.push(row('Severidad', escapeHtml(sev.severitytext)));
       } else {
         rows.push(row('Severidad', '<small>GDACS no publica un valor para este evento</small>'));
+        if (days > 1) stats.push([String(days), 'días de evento']);
       }
       if (!data.geometry) rows.push(row('Geometría', '<small>No disponible ahora</small>'));
-      return { rows, notes: GENERIC_NOTES[type] || [] };
+      const legend = [[ALERT[evt.alert].color, AREA_LABEL[type]], ['#ffffff', 'Centroide (GDACS)']];
+      return { stats, legend, rows, notes: GENERIC_NOTES[type] || [] };
     },
     series() { return []; },
   };
@@ -128,54 +136,35 @@ const tcModule = {
   layers(data, evt) {
     const out = [];
     const now = Date.now();
-    // Polígonos de viento (radios) y cono de previsión
     const past = [], current = [];
     for (const p of polys(data, (c) => c.startsWith('Poly_') || c.startsWith('Point_Polygon'))) {
       const cls = p.f.properties.Class;
       if (cls === 'Poly_Cones') {
-        out.push({ id: 'cone', object: lineObject(p.outer, { color: '#b48cff', opacity: 0.55, dashed: true }), update() {} });
+        out.push(areaLayer('cone', 'Cono de incertidumbre', [p], { color: '#b48cff', fill: 0, line: 0.55, dashed: true, frame: false }));
         continue;
       }
       const label = p.f.properties.polygonlabel;
       const dateFromLabel = labelDate(label, evt);
       const date = Number.isFinite(dateFromLabel) ? dateFromLabel : utc(p.f.properties.polygondate);
       const hasDateLabel = Number.isFinite(dateFromLabel);
-      if (cls.startsWith('Point_Polygon')) {
-        const g = new THREE.Group();
-        g.add(lineObject(p.outer, { color: '#9fe8ff', opacity: 0.85 }));
-        const fill = fillObject(p, { color: '#9fe8ff', opacity: 0.1 }); if (fill) g.add(fill);
-        past.push({ date, g });
-      } else if (date > now) { // previsión: tenue y siempre visible
-        out.push({ id: 'fc', object: lineObject(p.outer, { color: WIND_COLORS[cls] || '#ffb547', opacity: 0.28, dashed: true }), update() {} });
-      } else {
-        current.push({ cls, date, hasDateLabel, p });
-      }
+      if (cls.startsWith('Point_Polygon')) past.push({ date, p });
+      else if (date > now) { // previsión: tenue y siempre visible
+        out.push(areaLayer('fc', 'Previsión de viento', [p], { color: WIND_COLORS[cls] || '#ffb547', fill: 0, line: 0.28, dashed: true, frame: false }));
+      } else current.push({ cls, date, hasDateLabel, p });
     }
     // Sin duplicados: si hay polígono con etiqueta de fecha, el de umbral ("60 km/h") con la misma fecha sobra
     const seen = new Set();
     current.sort((a, b) => Number(b.hasDateLabel) - Number(a.hasDateLabel));
     for (const c of current) {
-      const key = `${c.cls}|${c.date}`;
+      const key = c.cls + '|' + c.date;
       if (seen.has(key)) continue;
       seen.add(key);
-      const color = WIND_COLORS[c.cls] || '#ffb547';
-      const g = new THREE.Group();
-      g.add(lineObject(c.p.outer, { color, opacity: 0.95 }));
-      const fill = fillObject(c.p, { color, opacity: 0.13 }); if (fill) g.add(fill);
-      out.push({ id: 'wind', object: g, update(t) { g.visible = t >= c.date; } });
+      out.push(areaLayer('wind', 'Viento ≥ 60 / 90 / 120 km/h', [c.p], { color: WIND_COLORS[c.cls] || '#ffb547', fill: 0.16, line: 0.95 }, (t) => t >= c.date));
     }
-    past.sort((a, b) => a.date - b.date);
     // Radios de viento de los avisos pasados: solo el más reciente respecto al instante simulado
-    const pastGroup = new THREE.Group();
-    for (const x of past) pastGroup.add(x.g);
-    out.push({
-      id: 'past', object: pastGroup,
-      update(t) {
-        let idx = -1;
-        past.forEach((x, i) => { if (x.date <= t) idx = i; });
-        past.forEach((x, i) => { x.g.visible = i === idx; });
-      },
-    });
+    past.sort((a, b) => a.date - b.date);
+    const idxAt = (t) => { let idx = -1; past.forEach((x, i) => { if (x.date <= t) idx = i; }); return idx; };
+    past.forEach((x, i) => out.push(areaLayer('past', 'Radios de viento pasados', [x.p], { color: '#9fe8ff', fill: 0.12, line: 0.85 }, (t) => idxAt(t) === i)));
 
     // Trayectoria por avisos: observada hasta el instante simulado, previsión en discontinuo
     const track = data.track || [];
@@ -192,7 +181,7 @@ const tcModule = {
         const cur = pointObject(obs[0].lat, obs[0].lon, { color: '#ff5a4d', size: 12 });
         const g = new THREE.Group(); g.add(line, dots, cur);
         out.push({
-          id: 'track', object: g,
+          id: 'track', label: 'Trayectoria', object: g,
           update(t) {
             let n = obs.filter((p) => p.t <= t).length;
             line.geometry.setDrawRange(0, Math.max(n, 0));
@@ -207,7 +196,7 @@ const tcModule = {
         const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(from.map((p) => latLonToVec3(p.lat, p.lon, 1.0048))),
           new THREE.LineDashedMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthWrite: false, dashSize: 0.006, gapSize: 0.005 }));
         line.computeLineDistances(); line.renderOrder = 5; line.frustumCulled = false;
-        out.push({ id: 'track-fc', object: line, update() {} });
+        out.push({ id: 'track-fc', label: 'Trayectoria', object: line, update() {} });
       }
     }
     return out;
@@ -219,8 +208,13 @@ const tcModule = {
     const obs = (data.track || []).filter((p) => !p.forecast);
     const last = obs[obs.length - 1];
     if (last) rows.push(row('Último aviso', `${escapeHtml(last.status || 'Ciclón')}${last.kmh != null ? ` · ${Math.round(last.kmh)} km/h` : ''}<small>${last.lat.toFixed(1)}°, ${last.lon.toFixed(1)}° · ${escapeHtml(new Date(last.t).toISOString().slice(0, 16).replace('T', ' '))} UTC</small>`));
-    rows.push(row('Leyenda', '<small>Blanco: trayectoria · rojo: posición en el aviso · verde/naranja/rojo: viento ≥ 60 / 90 / 120 km/h · azul: radios de viento pasados · morado discontinuo: cono de incertidumbre (previsión)</small>'));
-    return { rows, notes: ['Trayectoria y viento: avisos que recoge GDACS. Entre avisos no hay datos: las líneas son solo guías.', 'Los trazos discontinuos son previsión, no observación.'] };
+    const stats = [];
+    const maxKmh = Math.max(0, ...obs.map((p) => p.kmh || 0));
+    if (maxKmh) stats.push([Math.round(maxKmh).toLocaleString('es-ES'), 'km/h viento máx.']);
+    if (last?.kmh != null) stats.push([Math.round(last.kmh).toLocaleString('es-ES'), 'km/h último aviso']);
+    stats.push([String(Math.max(1, Math.ceil((Math.min(evt.to, Date.now()) - evt.from) / DAY))), 'días de evento']);
+    const legend = [['#ffffff', 'Trayectoria (aviso)'], ['#ff5a4d', 'Posición actual'], ['#5fd38d', 'Viento ≥ 60 km/h'], ['#ffb547', 'Viento ≥ 90 km/h'], ['#ff5a4d', 'Viento ≥ 120 km/h'], ['#9fe8ff', 'Radios pasados'], ['#b48cff', 'Cono de previsión']];
+    return { stats, legend, rows, notes: ['Trayectoria y viento: avisos que recoge GDACS. Entre avisos no hay datos: las líneas son solo guías.', 'Los trazos discontinuos son previsión, no observación.'] };
   },
   series(data) {
     const track = data.track || [];

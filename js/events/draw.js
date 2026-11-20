@@ -86,3 +86,63 @@ export function disposeTree(obj) {
     if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose());
   });
 }
+
+// ---------------------------------------------------------------------------------
+// Capas de área: objeto 3D (líneas + relleno) y, para zonas pequeñas, "calcomanía"
+// pintada en las teselas del terreno (se adapta al relieve en vez de flotar encima).
+// ---------------------------------------------------------------------------------
+export function areaLayer(id, label, polys, style, gate = () => true) {
+  const { color, fill = 0.2, line = 0.95, dashed = false, frame = true } = style;
+  const g = new THREE.Group();
+  for (const p of polys) {
+    g.add(lineObject(p.outer, { color, opacity: line, dashed }));
+    if (fill > 0) { const f = fillObject(p, { color, opacity: fill * 0.8 }); if (f) g.add(f); }
+  }
+  const layer = {
+    id, label, object: g, visible: true,
+    decal: { polys, color, fill, line, dashed, frame },
+    update(t) { layer.visible = gate(t); g.visible = layer.visible; },
+  };
+  return layer;
+}
+
+/** Caja que envuelve las capas con calcomanía (con margen); null si cruza el antimeridiano. */
+export function decalBox(layers) {
+  const rings = layers.filter((l) => l.decal.frame).flatMap((l) => l.decal.polys.map((p) => p.outer));
+  const b = bboxOf(rings);
+  if (!b) return null;
+  const padX = Math.max((b.e - b.w) * 0.2, 0.02), padY = Math.max((b.n - b.s) * 0.2, 0.02);
+  const box = { w: b.w - padX, e: b.e + padX, s: Math.max(-89, b.s - padY), n: Math.min(89, b.n + padY) };
+  return box.w < -180 || box.e > 180 ? null : box;
+}
+
+/** Pinta las capas visibles en el lienzo (proyección lineal lon/lat sobre `box`). */
+export function paintDecal(canvas, box, layers) {
+  const lonSpan = box.e - box.w, latSpan = box.n - box.s;
+  const k = 2048 / Math.max(lonSpan, latSpan);
+  const W = Math.max(64, Math.ceil(lonSpan * k)), H = Math.max(64, Math.ceil(latSpan * k));
+  if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  const g = canvas.getContext('2d');
+  g.clearRect(0, 0, W, H);
+  const cx = (box.w + box.e) / 2;
+  const lw = Math.max(2.5, W / 420);
+  for (const l of layers) {
+    const { polys, color, fill, line, dashed } = l.decal;
+    g.beginPath();
+    for (const p of polys) {
+      for (const ring of [p.outer, ...p.holes]) {
+        ring.forEach(([lon, lat], i) => {
+          const x = (lon + 360 * Math.round((cx - lon) / 360) - box.w) * k;
+          const y = (box.n - lat) * k;
+          if (i) g.lineTo(x, y); else g.moveTo(x, y);
+        });
+        g.closePath();
+      }
+    }
+    if (fill > 0) { g.globalAlpha = fill; g.fillStyle = color; g.fill('evenodd'); }
+    g.globalAlpha = line; g.strokeStyle = color; g.lineWidth = lw; g.lineJoin = 'round';
+    g.setLineDash(dashed ? [lw * 3, lw * 2] : []);
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+}

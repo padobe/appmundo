@@ -252,7 +252,7 @@ updateSun();
 
 // --- Capas ------------------------------------------------------------------
 const size = () => ({ w: innerWidth, h: innerHeight });
-const ctx = { scene, camera, renderer, ui, earth, time, isMobile: IS_MOBILE, size };
+const ctx = { scene, camera, renderer, ui, earth, time, tiles, isMobile: IS_MOBILE, size, fogScale: 1 };
 const quakes = new EarthquakesLayer(ctx);
 const iss = new IssLayer(ctx);
 const clouds = new CloudsLayer(ctx);
@@ -592,7 +592,7 @@ renderer.setAnimationLoop(() => {
 
   earth.setAltitude(h);
   sky.update(dt, h);
-  tiles.fog.value = (1 - smooth(h, 0.01, 0.15)) * 0.6;
+  tiles.fog.value = (1 - smooth(h, 0.01, 0.15)) * 0.6 * ctx.fogScale;
   tiles.fogColor.value.copy(sky.horizonColor(fogColor));
   tiles.update(innerHeight);
 
