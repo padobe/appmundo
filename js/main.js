@@ -608,7 +608,7 @@ renderer.setAnimationLoop(() => {
 
   earth.setAltitude(h);
   sky.update(dt, h);
-  tiles.fog.value = (1 - smooth(h, 0.01, 0.15)) * 0.6 * ctx.fogScale;
+  tiles.fog.value = (1 - smooth(h, 0.01, 0.15)) * 0.1 * ctx.fogScale;
   tiles.fogColor.value.copy(sky.horizonColor(fogColor));
   tiles.update(innerHeight);
 

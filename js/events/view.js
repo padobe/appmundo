@@ -64,7 +64,7 @@ export class EventView {
       this.env.clouds.setVisible(false);
       this.env.photo.setVisible(false);
     }
-    this.ctx.fogScale = 0.25; // menos bruma: la imagen se ve nítida y con relieve
+    this.ctx.fogScale = 0.3; // menos bruma: la imagen se ve nítida y con relieve
 
     this.travel(evt);
 
