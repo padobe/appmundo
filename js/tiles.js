@@ -76,6 +76,7 @@ const fragment = /* glsl */ `
   uniform sampler2D uDecal;  // zona de un evento pintada sobre el terreno (lon/lat lineal)
   uniform vec4 uDecalBox;    // x0, y0, x1, y1 en coordenadas geoUv
   uniform float uDecalOn;
+  uniform float uLift;       // luz mínima en el lado nocturno (modo evento)
   ${SHADE_PARS}
   varying vec2 vUv;
   varying vec2 vGeoUv;
@@ -101,6 +102,7 @@ const fragment = /* glsl */ `
     vec2 iuv = vec2(vUv.x, mix(vUv.y, 1.0 - vUv.y, uFlip));
     vec3 day = texture2D(dayMap, iuv).rgb * 1.12;
     vec3 col = shadeEarthT(day, vGeoUv, N, Nt, V);
+    col = max(col, day * 0.4 * uLift); // de noche el terreno sigue viéndose, tenue
     vec4 lab = texture2D(labelMap, iuv);
     col = mix(col, lab.rgb, lab.a * uLabels * 0.92);
     if (uDecalOn > 0.5) {
@@ -186,6 +188,7 @@ export class SatelliteTiles {
     this.exag = { value: TERRAIN_EXAGGERATION };
     this.fogColor = { value: new THREE.Color(0.6, 0.75, 0.95) };
     this.fog = { value: 0 };
+    this.lift = { value: 0 };
     this.decal = { map: { value: EMPTY }, box: { value: new THREE.Vector4() }, on: { value: 0 } };
     this.enabled = true;
     this.group = new THREE.Group();
@@ -463,6 +466,7 @@ export class SatelliteTiles {
         uDecal: this.decal.map,
         uDecalBox: this.decal.box,
         uDecalOn: this.decal.on,
+        uLift: this.lift,
         nightMap: this.shared.nightMap,
         waterMap: this.shared.waterMap,
         sunDir: this.shared.sunDir,

@@ -57,6 +57,7 @@ export class EventView {
     ui.showDetail(this.shell(evt, '<p class="pl-loading">Cargando datos del evento…</p>'), close);
     this.bindBack();
     document.body.classList.add('event-mode');
+    this.ctx.tiles.lift.value = 1;
     this.ctx.fogScale = 0.25; // menos bruma: la imagen se ve nítida y con relieve
 
     this.travel(evt);
@@ -261,6 +262,7 @@ export class EventView {
     this.decalMode = false;
     this.ctx.tiles?.setDecal(null);
     this.ctx.fogScale = 1;
+    if (this.ctx.tiles) this.ctx.tiles.lift.value = 0;
     document.body.classList.remove('event-mode');
     const lg = $('ev-legend');
     if (lg) lg.hidden = true;
