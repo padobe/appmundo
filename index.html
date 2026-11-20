@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Planeta en vivo</title>
+  <meta name="description" content="Un globo terráqueo 3D con lo que está pasando ahora mismo: día y noche en tiempo real, terremotos de las últimas 24 horas y la Estación Espacial Internacional en directo.">
+  <meta name="theme-color" content="#03050a">
+  <meta property="og:title" content="Planeta en vivo">
+  <meta property="og:description" content="La Tierra, ahora mismo: día y noche, terremotos y la ISS en directo.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' x2='1'%3E%3Cstop offset='0' stop-color='%2306101f'/%3E%3Cstop offset='.55' stop-color='%23173a6b'/%3E%3Cstop offset='1' stop-color='%237ec3ff'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle cx='16' cy='16' r='13' fill='url(%23g)'/%3E%3Ccircle cx='9' cy='19' r='1.4' fill='%23ffb547'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <canvas id="scene" aria-label="Globo terráqueo interactivo"></canvas>
+  <div class="vignette" aria-hidden="true"></div>
+
+  <header class="brand panel-free">
+    <div class="live"><span class="live-dot"></span>En directo</div>
+    <h1>Planeta <em>en vivo</em></h1>
+    <p class="tagline">La Tierra, ahora mismo.</p>
+  </header>
+
+  <div class="clock" aria-live="off">
+    <div class="clock-label">Hora UTC</div>
+    <div class="clock-time" id="utc-time">--:--:--</div>
+    <div class="clock-meta"><span id="utc-date"></span></div>
+    <div class="clock-meta dim" id="local-time"></div>
+  </div>
+
+  <section class="hud" aria-label="Datos en vivo">
+    <div class="stat">
+      <div class="stat-label"><span class="swatch quake"></span>Terremotos · 24 h</div>
+      <div class="stat-value" id="q-count">—</div>
+      <div class="stat-sub" id="q-sub">Cargando datos de USGS…</div>
+    </div>
+    <div class="stat">
+      <div class="stat-label"><span class="swatch iss"></span>La ISS sobrevuela</div>
+      <div class="stat-value stat-value-text" id="iss-region">—</div>
+      <div class="stat-sub" id="iss-sub">Buscando la estación…</div>
+    </div>
+  </section>
+
+  <div class="side">
+    <button id="btn-follow" class="btn" aria-pressed="false" type="button">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.5 3"/></svg>
+      <span class="btn-text">Seguir a la ISS</span>
+    </button>
+
+    <details class="legend" open>
+      <summary>Leyenda</summary>
+      <div class="legend-body">
+        <div class="legend-title">Magnitud</div>
+        <ul class="mag-scale">
+          <li><span style="--c:#4fd1c5;--s:6px"></span>&lt; 2.5</li>
+          <li><span style="--c:#f6d860;--s:8px"></span>2.5–4.5</li>
+          <li><span style="--c:#ff8a3d;--s:11px"></span>4.5–6</li>
+          <li><span style="--c:#ff3d6e;--s:14px"></span>≥ 6</li>
+        </ul>
+        <div class="legend-row"><span class="leg-iss"></span>ISS, estela de 30 min y zona desde la que es visible</div>
+        <div class="legend-row"><span class="leg-term"></span>Terminador: la línea entre el día y la noche, ahora</div>
+      </div>
+    </details>
+  </div>
+
+  <footer class="credits">
+    <span class="sources" id="sources"></span>
+    <span class="credit-text">Datos: <a href="https://earthquake.usgs.gov/" target="_blank" rel="noopener">USGS</a> · <a href="https://wheretheiss.at/" target="_blank" rel="noopener">wheretheiss.at</a> · Texturas: <a href="https://visibleearth.nasa.gov/" target="_blank" rel="noopener">NASA</a></span>
+  </footer>
+
+  <div id="iss-label" class="iss-label hidden" aria-hidden="true"><span>ISS</span></div>
+  <div id="tooltip" class="tooltip" role="tooltip"></div>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+
+  <div id="loader" class="loader">
+    <div class="loader-inner">
+      <div class="loader-orb"></div>
+      <div class="loader-title">Planeta <em>en vivo</em></div>
+      <div class="loader-track"><div class="loader-bar" id="loader-bar"></div></div>
+      <div class="loader-status" id="loader-status">Cargando el planeta · <span id="loader-pct">0%</span></div>
+    </div>
+  </div>
+
+  <noscript><p class="noscript">Esta web necesita JavaScript para dibujar el planeta.</p></noscript>
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
