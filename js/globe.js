@@ -96,7 +96,7 @@ export const SHADE_PARS = /* glsl */ `
     float fres = pow(1.0 - max(dot(N, V), 0.0), 2.6);
     float litRim = smoothstep(-0.25, 0.45, cosSun);
     vec3 haze = mix(vec3(1.0, 0.45, 0.2), vec3(0.32, 0.58, 1.0), smoothstep(-0.05, 0.35, cosSun));
-    return mix(col, haze, fres * (0.06 + 0.62 * litRim));
+    return mix(col, haze, fres * (0.04 + 0.26 * litRim));
   }
   vec3 shadeEarth(vec3 day, vec2 nightUv, vec3 N, vec3 V) { return shadeEarthT(day, nightUv, N, N, V); }
 `;
@@ -142,7 +142,7 @@ const atmoFragment = /* glsl */ `
     vec3 V = normalize(cameraPosition - vPosW);
     float rim = -dot(N, V);                       // 0 en el borde exterior, ~limb en el limbo
     float k = clamp(rim / limb, 0.0, 1.0);
-    float glow = pow(k, 2.2) * smoothstep(1.25, 0.9, k);
+    float glow = pow(k, 3.4) * smoothstep(1.25, 0.9, k); // más fino y suave: sin aspecto de plástico
     float s = dot(N, sunDir);
     float lit = mix(0.06, 1.0, smoothstep(-0.35, 0.35, s));
     vec3 blue = vec3(0.30, 0.62, 1.0);
@@ -152,7 +152,7 @@ const atmoFragment = /* glsl */ `
     float mu = dot(normalize(vPosW - cameraPosition), sunDir);
     float mie = pow(max(mu, 0.0), 10.0) * smoothstep(-0.45, 0.05, s);
     col = mix(col, vec3(1.0, 0.78, 0.55), clamp(mie, 0.0, 1.0) * 0.7);
-    float a = glow * (lit + mie * 1.6) * 1.15 * uFade;
+    float a = glow * (lit + mie * 1.2) * 0.42 * uFade;
     gl_FragColor = vec4(col * a, a);
     #include <colorspace_fragment>
   }
