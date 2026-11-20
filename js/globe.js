@@ -17,26 +17,19 @@ const earthVertex = /* glsl */ `
   }
 `;
 
-const earthFragment = /* glsl */ `
-  uniform sampler2D dayMap;
+// Sombreado compartido por el globo base y las teselas de satélite.
+// day: color de día; nightUv: coordenadas equirectangulares para luces y máscara de agua.
+export const SHADE_PARS = /* glsl */ `
   uniform sampler2D nightMap;
   uniform sampler2D waterMap;
   uniform vec3 sunDir;
-  varying vec2 vUv;
-  varying vec3 vNormalW;
-  varying vec3 vPosW;
 
-  void main() {
-    vec3 N = normalize(vNormalW);
-    vec3 V = normalize(cameraPosition - vPosW);
+  vec3 shadeEarth(vec3 day, vec2 nightUv, vec3 N, vec3 V) {
     float cosSun = dot(N, sunDir);
-
     // Mezcla día/noche: transición ancha (crepúsculo civil + náutico ≈ 12°)
     float dayMix = smoothstep(-0.16, 0.20, cosSun);
-
-    vec3 day = texture2D(dayMap, vUv).rgb;
-    vec3 night = texture2D(nightMap, vUv).rgb;
-    float water = texture2D(waterMap, vUv).r;
+    vec3 night = texture2D(nightMap, nightUv).rgb;
+    float water = texture2D(waterMap, nightUv).r;
 
     // Cara diurna: lambert suavizado
     float light = clamp(cosSun, 0.0, 1.0);
@@ -56,16 +49,27 @@ const earthFragment = /* glsl */ `
 
     vec3 col = mix(nightCol, dayCol, dayMix);
 
-    // Banda crepuscular anaranjada justo en el terminador
+    // Toque anaranjado en el terminador
     float twilight = exp(-pow((cosSun - 0.01) / 0.06, 2.0));
     col += vec3(1.0, 0.38, 0.12) * twilight * 0.004;
 
     // Bruma atmosférica en el borde del disco (solo en la parte iluminada)
     float fres = pow(1.0 - max(dot(N, V), 0.0), 2.6);
     float litRim = smoothstep(-0.25, 0.45, cosSun);
-    col = mix(col, vec3(0.32, 0.58, 1.0), fres * (0.06 + 0.62 * litRim));
+    return mix(col, vec3(0.32, 0.58, 1.0), fres * (0.06 + 0.62 * litRim));
+  }
+`;
 
-    gl_FragColor = vec4(col, 1.0);
+const earthFragment = /* glsl */ `
+  uniform sampler2D dayMap;
+  ${SHADE_PARS}
+  varying vec2 vUv;
+  varying vec3 vNormalW;
+  varying vec3 vPosW;
+  void main() {
+    vec3 N = normalize(vNormalW);
+    vec3 V = normalize(cameraPosition - vPosW);
+    gl_FragColor = vec4(shadeEarth(texture2D(dayMap, vUv).rgb, vUv, N, V), 1.0);
     #include <colorspace_fragment>
   }
 `;
@@ -86,6 +90,7 @@ const atmoVertex = /* glsl */ `
 const atmoFragment = /* glsl */ `
   uniform vec3 sunDir;
   uniform float limb;
+  uniform float uFade;
   varying vec3 vNormalW;
   varying vec3 vPosW;
   void main() {
@@ -99,7 +104,7 @@ const atmoFragment = /* glsl */ `
     vec3 blue = vec3(0.30, 0.62, 1.0);
     vec3 dusk = vec3(1.0, 0.52, 0.28);
     vec3 col = mix(dusk, blue, smoothstep(-0.12, 0.30, s));
-    float a = glow * lit * 1.15;
+    float a = glow * lit * 1.15 * uFade;
     gl_FragColor = vec4(col * a, a);
     #include <colorspace_fragment>
   }
@@ -164,6 +169,7 @@ export function createEarth({ scene, renderer, manager, isMobile, onTextureError
   const atmoUniforms = {
     sunDir: uniforms.sunDir,
     limb: { value: Math.sqrt(1 - 1 / (ATMO_R * ATMO_R)) },
+    uFade: { value: 1 },
   };
   const atmosphere = new THREE.Mesh(
     new THREE.SphereGeometry(ATMO_R, 96, 64),
@@ -181,6 +187,9 @@ export function createEarth({ scene, renderer, manager, isMobile, onTextureError
 
   return {
     mesh: earth,
+    uniforms,
+    /** Atenúa el halo cuando la cámara se mete en la atmósfera (zoom cercano). */
+    setAltitude(h) { atmoUniforms.uFade.value = THREE.MathUtils.smoothstep(h, 0.06, 0.22); },
     setSunDirection(v) { uniforms.sunDir.value.copy(v).normalize(); },
     /** true/false si la máscara está cargada; null si aún no. */
     isWater(lat, lon) { return waterSampler ? waterSampler(lat, lon) : null; },

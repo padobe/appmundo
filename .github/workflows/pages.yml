@@ -1,0 +1,49 @@
+# Publica la web en GitHub Pages y, cada 15 minutos, refresca data/planes.json
+# con los aviones en vuelo de OpenSky (que no permite llamadas desde el navegador).
+# La web sigue siendo estática: esta Action solo descarga datos y publica la carpeta tal cual.
+name: Publicar en GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Descargar aviones (OpenSky)
+        run: node scripts/fetch-planes.mjs
+        continue-on-error: true # si falla, se publica el último planes.json del repo
+        env:
+          OPENSKY_CLIENT_ID: ${{ secrets.OPENSKY_CLIENT_ID }}
+          OPENSKY_CLIENT_SECRET: ${{ secrets.OPENSKY_CLIENT_SECRET }}
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

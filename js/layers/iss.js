@@ -228,8 +228,28 @@ export class IssLayer {
     this.trail.visible = true;
   }
 
+  setVisible(on) { this.visible = on; }
+
+  /** Oculta o muestra todos los objetos de la capa. */
+  show(on) {
+    for (const o of [this.marker, this.trail, this.drop, this.footprint]) if (!on) o.visible = false;
+    if (!on) this.label?.classList.add('hidden');
+    this.shown = on;
+  }
+
   update(dt) {
-    const { camera, size, ui } = this.ctx;
+    const { camera, size, ui, time } = this.ctx;
+    // La ISS solo se muestra en directo (no hay histórico de 24 h gratis)
+    const on = this.visible !== false && time.live;
+    if (!on) {
+      if (this.shown !== false) {
+        this.show(false);
+        if (!time.live) { ui.set('iss-region', 'Solo en directo'); ui.set('iss-sub', 'Vuelve a «En directo» para\nver la estación espacial'); }
+      }
+      this.lastRegionAt = 0;
+      return;
+    }
+    this.shown = true;
     const T = this.serverNow() - DELAY_S;
     const st = this.stateAt(T, this.sub);
     if (!st) return;
@@ -241,7 +261,8 @@ export class IssLayer {
     // Marcador con un pulso suave
     const pulse = 1 + Math.sin(performance.now() * 0.004) * 0.12;
     this.marker.position.copy(this.position);
-    this.marker.scale.setScalar(0.075 * pulse);
+    const camDist = camera.position.distanceTo(this.position);
+    this.marker.scale.setScalar(0.075 * pulse * THREE.MathUtils.clamp(camDist / 2.6, 0.03, 1));
     this.marker.visible = true;
 
     // Estela: la ISS se mueve ~0,07°/s, basta con reconstruirla una vez por segundo
@@ -319,7 +340,7 @@ export class IssLayer {
   }
 
   pick(x, y, radius) {
-    if (!this.state) return null;
+    if (!this.state || !this.shown) return null;
     const { camera, size } = this.ctx;
     const { w, h } = size();
     const sp = toScreen(this.position, camera, w, h);

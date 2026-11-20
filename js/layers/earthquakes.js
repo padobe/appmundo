@@ -18,26 +18,30 @@ const colorFor = (m) => [...MAG_COLORS].reverse().find((c) => m >= c.min).color;
 const vertex = /* glsl */ `
   attribute vec3 aColor;
   attribute float aPhase;
-  attribute float aAge;
+  attribute float aT;
   attribute float aRing;
+  uniform float uScale;
   varying vec2 vUv;
   varying vec3 vColor;
   varying float vPhase;
-  varying float vAge;
+  varying float vT;
   varying float vRing;
   void main() {
     vUv = uv;
-    vColor = aColor; vPhase = aPhase; vAge = aAge; vRing = aRing;
-    gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+    vColor = aColor; vPhase = aPhase; vT = aT; vRing = aRing;
+    gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position * uScale, 1.0);
   }
 `;
 
+// uNow y aT: segundos desde una referencia común → sirve igual en directo y en la repetición.
 const fragment = /* glsl */ `
   uniform float uTime;
+  uniform float uNow;
+  uniform float uBurst;
   varying vec2 vUv;
   varying vec3 vColor;
   varying float vPhase;
-  varying float vAge;
+  varying float vT;
   varying float vRing;
 
   float ring(float r, float t) {
@@ -45,6 +49,8 @@ const fragment = /* glsl */ `
   }
 
   void main() {
+    float age = uNow - vT;
+    if (age < 0.0) discard;              // aún no ha ocurrido
     float r = length(vUv - 0.5) * 2.0;
     if (r > 1.0) discard;
     float speed = mix(0.55, 0.28, vRing);
@@ -53,8 +59,14 @@ const fragment = /* glsl */ `
     float rings = max(ring(r, t1), ring(r, t2)) * vRing;
     float core = smoothstep(0.13, 0.04, r);
     float glow = exp(-r * r * 18.0) * 0.55;
-    float fresh = mix(1.0, 0.5, vAge);
+    float fresh = mix(1.0, 0.45, clamp(age / 86400.0, 0.0, 1.0));
     float a = (rings * 0.95 + core + glow) * fresh;
+    // Onda de choque cuando acaba de ocurrir
+    float b = age / uBurst;
+    if (b < 1.0) {
+      a += smoothstep(0.1, 0.0, abs(r - b)) * pow(1.0 - b, 1.2) * 1.6;
+      a += (1.0 - b) * smoothstep(0.4, 0.0, r) * 0.9;
+    }
     if (a < 0.004) discard;
     gl_FragColor = vec4(vColor, a);
     #include <colorspace_fragment>
@@ -82,7 +94,9 @@ export class EarthquakesLayer {
     this.items = [];
     this.seen = null;
     this.mesh = null;
-    this.uniforms = { uTime: { value: 0 } };
+    this.uniforms = { uTime: { value: 0 }, uNow: { value: 0 }, uBurst: { value: 1200 }, uScale: { value: 1 } };
+    this.base = Date.now() - 26 * 3600 * 1000;
+    this.visible = true;
     this.material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
       vertexShader: vertex,
@@ -131,6 +145,7 @@ export class EarthquakesLayer {
     }
     this.seen = new Set(all.map((q) => q.id));
 
+    this.all = all;
     this.total = all.length;
     this.strongest = all.reduce((a, b) => (!a || b.mag > a.mag ? b : a), null);
     this.latest = all.reduce((a, b) => (!a || b.time > a.time ? b : a), null);
@@ -150,7 +165,7 @@ export class EarthquakesLayer {
     const geo = this.geometry.clone();
     const color = new Float32Array(n * 3);
     const phase = new Float32Array(n);
-    const age = new Float32Array(n);
+    const tAttr = new Float32Array(n);
     const ringAmp = new Float32Array(n);
     const mesh = new THREE.InstancedMesh(geo, this.material, Math.max(n, 1));
     mesh.count = n;
@@ -174,43 +189,65 @@ export class EarthquakesLayer {
       c.set(colorFor(it.mag)).convertSRGBToLinear();
       color.set([c.r, c.g, c.b], i * 3);
       phase[i] = Math.random();
-      age[i] = THREE.MathUtils.clamp((now - it.time) / 86400000, 0, 1);
+      tAttr[i] = (it.time - this.base) / 1000;
       ringAmp[i] = THREE.MathUtils.clamp((it.mag - 1.2) / 3, 0.2, 1);
     });
 
     geo.setAttribute('aColor', new THREE.InstancedBufferAttribute(color, 3));
     geo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phase, 1));
-    geo.setAttribute('aAge', new THREE.InstancedBufferAttribute(age, 1));
+    geo.setAttribute('aT', new THREE.InstancedBufferAttribute(tAttr, 1));
     geo.setAttribute('aRing', new THREE.InstancedBufferAttribute(ringAmp, 1));
     mesh.instanceMatrix.needsUpdate = true;
+    mesh.visible = this.visible;
     this.mesh = mesh;
     this.ctx.scene.add(mesh);
   }
 
   updateStats(force = false) {
     const now = performance.now();
-    if (!force && now - this.lastSubUpdate < 20000) return;
+    const { time, ui } = this.ctx;
+    const every = time.live ? 20000 : 150;
+    if (!force && now - this.lastSubUpdate < every) return;
     this.lastSubUpdate = now;
-    const { ui } = this.ctx;
-    if (this.total == null) return;
-    ui.set('q-count', this.total.toLocaleString('es-ES'));
+    if (!this.all) return;
+    const T = time.now();
+    const seen = time.live ? this.all : this.all.filter((q) => q.time <= T);
+    const strongest = seen.reduce((m, q) => (!m || q.mag > m.mag ? q : m), null);
+    const latest = seen.reduce((m, q) => (!m || q.time > m.time ? q : m), null);
+    ui.set('q-count', seen.length.toLocaleString('es-ES'));
     const parts = [];
-    if (this.strongest) parts.push(`Mayor: M ${this.strongest.mag.toFixed(1)} · ${regionOf(this.strongest.place)}`);
-    if (this.latest) parts.push(`Último ${timeAgo(this.latest.time)}`);
+    if (strongest) parts.push(`Mayor: M ${strongest.mag.toFixed(1)} · ${regionOf(strongest.place)}`);
+    if (time.live && latest) parts.push(`Último ${timeAgo(latest.time)}`);
+    if (!time.live) parts.push('Repetición de las últimas 24 h');
     ui.set('q-sub', parts.join('\n'));
   }
 
+  setVisible(on) {
+    this.visible = on;
+    if (this.mesh) this.mesh.visible = on;
+  }
+
   update(dt) {
+    const { time, camera } = this.ctx;
     this.uniforms.uTime.value += dt;
+    this.uniforms.uNow.value = (time.now() - this.base) / 1000;
+    // En la repetición el tiempo corre ~2400× más rápido: la onda dura ~1,5 s reales
+    this.uniforms.uBurst.value = time.live ? 1200 : time.speed * 1.5;
+    const h = camera.position.length() - 1;
+    this.uniforms.uScale.value = THREE.MathUtils.clamp(h / 2.2, 0.01, 1);
+    if (this.mesh) this.mesh.visible = this.visible;
+    if (time.live !== this.wasLive) { this.wasLive = time.live; this.updateStats(true); }
     this.updateStats();
   }
 
   pick(x, y, radius) {
-    const { camera, size } = this.ctx;
+    if (!this.visible) return null;
+    const { camera, size, time } = this.ctx;
+    const T = time.now();
     const { w, h } = size();
     let best = null;
     for (const it of this.items) {
-      if (!it.pos) continue;
+      if (!it.pos || it.time > T) continue;
       const sp = toScreen(it.pos, camera, w, h);
       if (sp.behind) continue;
       const d = Math.hypot(sp.x - x, sp.y - y);

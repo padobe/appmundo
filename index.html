@@ -33,7 +33,7 @@
   </header>
 
   <div class="clock" aria-live="off">
-    <div class="clock-label">Hora UTC</div>
+    <div class="clock-label" id="clock-label">Hora UTC</div>
     <div class="clock-time" id="utc-time">--:--:--</div>
     <div class="clock-meta"><span id="utc-date"></span></div>
     <div class="clock-meta dim" id="local-time"></div>
@@ -58,25 +58,65 @@
       <span class="btn-text">Seguir a la ISS</span>
     </button>
 
-    <details class="legend" open>
-      <summary>Leyenda</summary>
-      <div class="legend-body">
-        <div class="legend-title">Magnitud</div>
-        <ul class="mag-scale">
+    <details class="layers" open>
+      <summary>Capas</summary>
+      <div class="layers-body">
+        <label class="layer-row">
+          <input type="checkbox" data-layer="quakes" checked>
+          <span class="switch" aria-hidden="true"></span>
+          <span class="layer-name">Terremotos</span>
+        </label>
+        <ul class="mag-scale" aria-label="Magnitud">
           <li><span style="--c:#4fd1c5;--s:6px"></span>&lt; 2.5</li>
           <li><span style="--c:#f6d860;--s:8px"></span>2.5–4.5</li>
           <li><span style="--c:#ff8a3d;--s:11px"></span>4.5–6</li>
           <li><span style="--c:#ff3d6e;--s:14px"></span>≥ 6</li>
         </ul>
-        <div class="legend-row"><span class="leg-iss"></span>ISS, estela de 30 min y zona desde la que es visible</div>
-        <div class="legend-row"><span class="leg-term"></span>Terminador: la línea entre el día y la noche, ahora</div>
+        <label class="layer-row">
+          <input type="checkbox" data-layer="iss" checked>
+          <span class="switch" aria-hidden="true"></span>
+          <span class="layer-name">Estación Espacial</span>
+          <span class="layer-meta">estela 30 min</span>
+        </label>
+        <label class="layer-row">
+          <input type="checkbox" data-layer="planes" checked>
+          <span class="switch" aria-hidden="true"></span>
+          <span class="layer-name">Aviones en vuelo</span>
+          <span class="layer-meta" id="planes-count">—</span>
+        </label>
+        <label class="layer-row">
+          <input type="checkbox" data-layer="clouds" checked>
+          <span class="switch" aria-hidden="true"></span>
+          <span class="layer-name">Nubes</span>
+          <span class="layer-meta">cada 3 h</span>
+        </label>
+        <label class="layer-row">
+          <input type="checkbox" data-layer="labels" checked>
+          <span class="switch" aria-hidden="true"></span>
+          <span class="layer-name">Nombres al acercarse</span>
+        </label>
+        <p class="layers-credits">Datos: USGS · wheretheiss.at · OpenSky · live-cloud-maps · Imágenes: NASA, Esri, Maxar, Earthstar Geographics</p>
+        <p class="layers-hint">Rueda, pellizco o doble clic para acercarte hasta ver el terreno con imágenes de satélite.</p>
       </div>
     </details>
   </div>
 
+  <div class="timeline" role="group" aria-label="Línea de tiempo">
+    <button id="tl-play" class="tl-btn" type="button" data-state="play" aria-label="Reproducir las últimas 24 h">
+      <svg class="i-play" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2.5v11l9-5.5z" fill="currentColor"/></svg>
+      <svg class="i-pause" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M4 2.5h3v11H4zM9 2.5h3v11H9z" fill="currentColor"/></svg>
+    </button>
+    <div class="tl-track">
+      <div class="tl-ticks" aria-hidden="true"><span>−24 h</span><span>−12 h</span><span>ahora</span></div>
+      <input id="tl-range" type="range" min="0" max="1000" step="1" value="1000" aria-label="Momento de las últimas 24 horas">
+    </div>
+    <span class="tl-label" id="tl-label">En directo</span>
+    <button id="tl-live" class="tl-live" type="button" aria-pressed="true"><span class="live-dot"></span>Directo</button>
+  </div>
+
   <footer class="credits">
     <span class="sources" id="sources"></span>
-    <span class="credit-text">Datos: <a href="https://earthquake.usgs.gov/" target="_blank" rel="noopener">USGS</a> · <a href="https://wheretheiss.at/" target="_blank" rel="noopener">wheretheiss.at</a> · Texturas: <a href="https://visibleearth.nasa.gov/" target="_blank" rel="noopener">NASA</a></span>
+    <span class="credit-text">Datos: <a href="https://earthquake.usgs.gov/" target="_blank" rel="noopener">USGS</a> · <a href="https://wheretheiss.at/" target="_blank" rel="noopener">wheretheiss.at</a> · <a href="https://opensky-network.org/" target="_blank" rel="noopener">OpenSky</a> · Nubes: <a href="https://github.com/matteason/live-cloud-maps" target="_blank" rel="noopener">live-cloud-maps</a> · Imágenes: <a href="https://visibleearth.nasa.gov/" target="_blank" rel="noopener">NASA</a>, <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a>, Maxar, Earthstar Geographics</span>
   </footer>
 
   <div id="iss-label" class="iss-label hidden" aria-hidden="true"><span>ISS</span></div>

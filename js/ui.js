@@ -10,19 +10,67 @@ export const ui = {
     if (el && el.textContent !== text) el.textContent = text;
   },
 
-  // --- Reloj UTC -----------------------------------------------------------
-  startClock() {
-    const time = $('utc-time'), date = $('utc-date'), local = $('local-time');
+  // --- Reloj UTC (sigue a la repetición si está activa) -----------------
+  startClock(time) {
     const fDate = new Intl.DateTimeFormat('es-ES', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
     const fLocal = new Intl.DateTimeFormat('es-ES', { hour: '2-digit', minute: '2-digit' });
     const tick = () => {
-      const d = new Date();
-      time.textContent = d.toISOString().slice(11, 19);
-      date.textContent = fDate.format(d);
-      local.textContent = `Tu hora: ${fLocal.format(d)}`;
+      const d = new Date(time.now());
+      this.set('utc-time', d.toISOString().slice(11, 19));
+      this.set('utc-date', fDate.format(d));
+      this.set('local-time', time.live ? `Tu hora: ${fLocal.format(d)}` : 'Repetición en curso');
+      this.set('clock-label', time.live ? 'Hora UTC' : 'Repetición · UTC');
+      document.body.classList.toggle('replay', !time.live);
+      this.updateTimeline(time);
     };
     tick();
-    setInterval(tick, 1000);
+    setInterval(tick, 100);
+  },
+
+  // --- Línea de tiempo -------------------------------------------------
+  bindTimeline(time) {
+    const range = $('tl-range'), play = $('tl-play'), live = $('tl-live');
+    range.addEventListener('input', () => time.seek(Number(range.value) / 1000));
+    play.addEventListener('click', () => time.togglePlay());
+    live.addEventListener('click', () => time.goLive());
+    time.onChange(() => this.updateTimeline(time));
+    this.updateTimeline(time);
+  },
+  updateTimeline(time) {
+    const range = $('tl-range');
+    if (!range) return;
+    const f = time.fraction();
+    if (document.activeElement !== range) range.value = String(Math.round(f * 1000));
+    range.style.setProperty('--p', `${(f * 100).toFixed(2)}%`);
+    const playing = !time.live && time.playing;
+    const play = $('tl-play');
+    play.setAttribute('aria-label', playing ? 'Pausar' : 'Reproducir las últimas 24 h');
+    play.dataset.state = playing ? 'pause' : 'play';
+    $('tl-live').setAttribute('aria-pressed', String(time.live));
+    let txt = 'En directo';
+    if (!time.live) {
+      const mins = Math.round((Date.now() - time.now()) / 60000);
+      const h = Math.floor(mins / 60), m = mins % 60;
+      txt = `−${h ? `${h} h ` : ''}${m} min`;
+    }
+    this.set('tl-label', txt);
+  },
+
+  // --- Capas activables -----------------------------------------------
+  bindToggles(handlers) {
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem('planeta.capas') || '{}'); } catch { /* sin almacenamiento */ }
+    for (const [id, fn] of Object.entries(handlers)) {
+      const input = document.querySelector(`[data-layer="${id}"]`);
+      if (!input) continue;
+      if (typeof saved[id] === 'boolean') input.checked = saved[id];
+      fn(input.checked);
+      input.addEventListener('change', () => {
+        fn(input.checked);
+        saved[id] = input.checked;
+        try { localStorage.setItem('planeta.capas', JSON.stringify(saved)); } catch { /* sin almacenamiento */ }
+      });
+    }
   },
 
   // --- Estado de las fuentes de datos -----------------------------------
