@@ -4,6 +4,12 @@ import { escapeHtml } from '../net.js';
 import { latestImage, cloudsOnly, TRUE_COLOR, FLOOD_BANDS } from './gibs.js';
 import { spiralObject, plumeObject } from './fx2.js';
 import { loadWeather } from './fire.js';
+import { loadNhc, nhcCovers, radiiKt } from './nhc.js';
+import { polygonsOf, areaLayer, lineObject } from './draw.js';
+import * as THREE from 'three';
+
+const KT_COLOR = { 34: '#5fd38d', 50: '#ffb547', 64: '#ff5a4d' };
+const KT_KMH = { 34: 63, 50: 93, 64: 119 };
 
 const DAY = 86400000;
 const D2R = Math.PI / 180;
@@ -37,16 +43,34 @@ export function cycloneExtras(base) {
     ...base,
     async loadData(evt) {
       const data = await base.loadData(evt);
+      const nhc = nhcCovers(evt) ? loadNhc(evt).catch(() => null) : Promise.resolve(undefined);
       try {
         const box = grow(base.frame(data, evt), 1.5, 34);
         const img = box && await latestImage(TRUE_COLOR, box, { from: Math.min(Date.now() - DAY, evt.to) });
         if (img) data.sat = { box, canvas: cloudsOnly(img.canvas), day: img.day };
       } catch { /* sin imagen */ }
       if (!data.sat) data.errors.push('No se pudo cargar la imagen de satélite del día (NASA GIBS).');
+      data.nhc = await nhc; // undefined: fuera de la zona del NHC · null: el NHC no lo tiene activo
       return data;
     },
     layers(data, evt, env = {}) {
-      const out = base.layers(data, evt, env);
+      let out = base.layers(data, evt, env);
+      const nhc = data.nhc;
+      if (nhc) {
+        out = out.filter((l) => l.id !== 'cone' && l.id !== 'fc');
+        const cone = nhc.cone.flatMap((f) => polygonsOf(f.geometry));
+        if (cone.length) out.push(areaLayer('nhc-cone', 'Cono de previsión (NHC)', cone, { color: '#b48cff', fill: 0.1, line: 0.85, frame: false }));
+        for (const kt of [34, 50, 64]) {
+          const ps = nhc.radii.filter((f) => radiiKt(f) === kt).flatMap((f) => polygonsOf(f.geometry));
+          if (ps.length) out.push(areaLayer('nhc-radii', 'Radios de viento previstos (NHC)', ps, { color: KT_COLOR[kt], fill: 0.06, line: 0.7, dashed: true, frame: false }));
+        }
+        const g = new THREE.Group();
+        for (const f of nhc.track) {
+          const lines = f.geometry?.type === 'LineString' ? [f.geometry.coordinates] : f.geometry?.type === 'MultiLineString' ? f.geometry.coordinates : [];
+          for (const ln of lines) if (ln.length > 1) g.add(lineObject(ln, { color: '#ffffff', opacity: 0.85, dashed: true, closed: false, width: 2.2 }));
+        }
+        if (g.children.length) out.push({ id: 'nhc-track', label: 'Trayectoria prevista (NHC)', object: g, update() {} });
+      }
       if (data.sat) {
         const { box, canvas, day } = data.sat;
         out.unshift(imageLayer('sat', `Nubes reales NASA (${dayLabel(day)})`, box, (g, x, y, w, h) => g.drawImage(canvas, x, y, w, h)));
@@ -77,14 +101,26 @@ export function cycloneExtras(base) {
         .map((p) => ({ lat: p.lat, lon: p.lon, text: fmtDay.format(p.t), sub: p.kmh != null ? `${Math.round(p.kmh)} km/h` : '', t: p.t }));
       const max = obs.reduce((a, b) => ((b.kmh || 0) > (a?.kmh || 0) ? b : a), null);
       if (max?.kmh) out.push({ lat: max.lat, lon: max.lon, text: `${Math.round(max.kmh)} km/h`, sub: 'viento máximo', kind: 'big', t: max.t });
+      for (const f of (data.nhc?.points || []).slice(0, 8)) {
+        const c = f.geometry?.coordinates;
+        const pr = f.properties || {};
+        const label = pr.DATELBL || pr.datelbl || pr.FLDATELBL || pr.fldatelbl || '';
+        const kt = Number(pr.MAXWIND ?? pr.maxwind);
+        if (c && label) out.push({ lat: c[1], lon: c[0], text: String(label), sub: Number.isFinite(kt) ? `previsión NHC · ${Math.round(kt * 1.852)} km/h` : 'previsión NHC' });
+      }
       return out;
     },
     panel(data, evt) {
       const p = base.panel(data, evt);
       const notes = [...p.notes, 'La espiral de nubes es una ilustración; las nubes reales son la imagen de satélite NASA (VIIRS) del día indicado.'];
       const rows = [...p.rows];
+      if (data.nhc) rows.push(['NHC', `Aviso ${escapeHtml(data.nhc.advisory || '—')} · ${escapeHtml(data.nhc.name)}<small>National Hurricane Center (NOAA): cono, trayectoria prevista y radios de viento oficiales; sustituyen a la previsión de GDACS</small>`]);
+      else if (data.nhc === null) rows.push(['NHC', '<small>El NHC no tiene este ciclón activo ahora; se usa la previsión de GDACS</small>']);
       if (data.sat) rows.push(['Satélite', `NASA GIBS · VIIRS NOAA-20<small>imagen del ${escapeHtml(dayLabel(data.sat.day))}; solo se muestran las nubes</small>`]);
-      return { ...p, rows, notes };
+      const legend = data.nhc
+        ? [...p.legend.filter(([, t]) => !/Cono/.test(t)), ['#b48cff', 'Cono de previsión (NHC)'], ...[34, 50, 64].map((kt) => [KT_COLOR[kt], `Radio ≥ ${KT_KMH[kt]} km/h previsto (NHC)`])]
+        : p.legend;
+      return { ...p, rows, notes, legend };
     },
   };
 }

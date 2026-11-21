@@ -22,6 +22,20 @@ const ageColor = (days) => AGE.find((a) => days < a.max).color;
 const CONF = { l: 'baja', n: 'nominal', h: 'alta' };
 const fmtHM = (ms) => new Date(ms).toISOString().slice(11, 16);
 const fmtDay = new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+const fmtFull = new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+
+/** Ficha de un foco de calor (al pasar el ratón). */
+function hotspotHtml(d, now) {
+  const age = (now - d.t) / DAY;
+  const a = AGE.find((x) => age < x.max);
+  const ago = age < 1 ? `hace ${Math.max(1, Math.round(age * 24))} h` : `hace ${Math.floor(age)} d`;
+  const sat = d.sat ? `NOAA-${String(d.sat).replace('N', '')}` : 'VIIRS';
+  return `
+    <div class="tt-kicker" style="--c:${a.color}"><span class="tt-dot"></span>Foco de calor · ${escapeHtml(a.label)}</div>
+    <div class="tt-title">${escapeHtml(fmtFull.format(d.t))} UTC</div>
+    <div class="tt-meta">${escapeHtml(sat)} · confianza ${escapeHtml(CONF[d.conf] || String(d.conf || '—'))}${d.frp ? ` · ${Math.round(d.frp)} MW` : ''} · ${ago}</div>
+    <div class="tt-meta">${d.lat.toFixed(4)}°, ${d.lon.toFixed(4)}° · píxel de ~375 m · NASA FIRMS</div>`;
+}
 
 /** Manchas suaves pre-dibujadas para el mapa de calor (mucho más rápido que un gradiente por foco). */
 let SPRITES = null;
@@ -190,6 +204,7 @@ export function fireModule(base) {
         const sprites = heatSprites();
         const layer = {
           id: 'fires', label: 'Focos de calor por antigüedad', object: pts, keep3d: true, visible: true, hotspots: pts,
+          pick: { items: dets, html: hotspotHtml },
           // Mapa de calor pintado sobre el relieve: suelo quemado (antiguo) → brasas → fuego reciente
           decal: {
             polys: [{ outer: rect, holes: [] }], frame: true,

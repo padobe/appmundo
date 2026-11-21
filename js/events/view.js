@@ -327,6 +327,27 @@ export class EventView {
     }
   }
 
+  /** Ficha al pasar el ratón por un punto con datos propios (foco de calor, réplica…). */
+  pick(x, y, radius) {
+    if (!this.evt || !this.group) return null;
+    const { camera, time, tiles } = this.ctx;
+    const t = time.live ? Date.now() : time.now();
+    const W = innerWidth, H = innerHeight;
+    const v = new THREE.Vector3();
+    let best = null;
+    for (const l of this.layers) {
+      if (!l.pick || l.visible === false || this.off.has(l.label)) continue;
+      for (const it of l.pick.items) {
+        if (it.t > t) continue;
+        latLonToVec3(it.lat, it.lon, 1 + groundAt(tiles, it.lat, it.lon), v).project(camera);
+        if (v.z > 1) continue;
+        const d = Math.hypot((v.x + 1) / 2 * W - x, (1 - v.y) / 2 * H - y);
+        if (d <= radius + 6 && (!best || d < best.d)) best = { d, it, l };
+      }
+    }
+    return best ? { dist: best.d - 3, html: best.l.pick.html(best.it, t) } : null;
+  }
+
   seek(t) {
     const { time } = this.ctx;
     if (time.span !== 'event' || time.event?.owner !== 'gdacs') return;

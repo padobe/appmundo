@@ -373,7 +373,7 @@ document.getElementById('video-close').addEventListener('click', () => toggleVid
 if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
   navigator.serviceWorker.register(new URL('../sw.js', import.meta.url)).catch((e) => console.warn('[sw]', e));
 }
-window.planeta = { camera, controls, layers, scene, tiles, time, sky, rig, tour, place, eclipses, photo, gdacs }; // depuración
+window.planeta = { ev: () => eventView, camera, controls, layers, scene, tiles, time, sky, rig, tour, place, eclipses, photo, gdacs }; // depuración
 
 // --- Seguir a la ISS --------------------------------------------------------
 ui.onFollow(() => { tour.stop(); setFollow(!follow); });
@@ -420,7 +420,7 @@ canvas.addEventListener('pointerup', (e) => {
 canvas.addEventListener('pointerleave', () => { hover = null; ui.hideTooltip(); });
 canvas.addEventListener('dblclick', (e) => zoomBy(0.35, e.clientX, e.clientY));
 
-const pickables = [...layers, sky];
+const pickables = [...layers, sky, { pick: (x, y, r) => eventView?.pick(x, y, r) }]; // focos y réplicas de la vista de eventos
 function pickAt(x, y, radius) {
   let best = null;
   for (const l of pickables) {

@@ -28,6 +28,15 @@ async function loadUsgs(evt) {
   return out;
 }
 
+const fmtFull = new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+function afterHtml(q, now) {
+  const h = (now - q.t) / 3600000;
+  return `
+    <div class="tt-kicker" style="--c:#ffb547"><span class="tt-dot"></span>Réplica · USGS</div>
+    <div class="tt-title">M ${q.mag.toFixed(1)} · ${Math.round(q.depth)} km de profundidad</div>
+    <div class="tt-meta">${escapeHtml(fmtFull.format(q.t))} UTC · ${h < 48 ? `hace ${Math.max(1, Math.round(h))} h` : `hace ${Math.round(h / 24)} d`}</div>`;
+}
+
 const lines = (g) => (g?.type === 'LineString' ? [g.coordinates] : g?.type === 'MultiLineString' ? g.coordinates : []);
 
 export function quakeModule(base) {
@@ -90,7 +99,7 @@ export function quakeModule(base) {
       }
       if (u?.after?.length) {
         const pts = quakePointsObject(u.after, { tiles: env.tiles, t0: u.time });
-        out.push({ id: 'after', label: 'Réplicas (USGS)', object: pts, update(t) { pts.userData.setTime(t); } });
+        out.push({ id: 'after', label: 'Réplicas (USGS)', object: pts, update(t) { pts.userData.setTime(t); }, pick: { items: u.after, html: afterHtml } });
       }
       return out;
     },
