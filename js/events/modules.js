@@ -10,9 +10,13 @@
 import * as THREE from 'three';
 import { fetchJSON, escapeHtml } from '../net.js';
 import { ALERT, utc } from './gdacs.js';
-import { polygonsOf, bboxOf, areaLayer, pointObject } from './draw.js';
+import { polygonsOf, bboxOf, areaLayer } from './draw.js';
+import { tubeObject } from './fx.js';
 import { latLonToVec3 } from '../geo.js';
 import { fireModule } from './fire.js';
+import { eonetModule } from './eonet.js';
+import { quakeModule } from './quake.js';
+import { cycloneExtras, floodExtras, volcanoExtras, fireExtras } from './extras.js';
 
 const DAY = 86400000;
 const row = (k, v) => [k, v];
@@ -59,8 +63,6 @@ function genericModule(type) {
       const glob = polys(data, (c) => c === 'Poly_Global');
       if (main.length) out.push(areaLayer('area', AREA_LABEL[type], main, { color, fill: 0.28, line: 0.95 }, gate));
       if (glob.length) out.push(areaLayer('global', 'Área global (referencia)', glob, { color, fill: 0, line: 0.35, dashed: true, frame: false }, gate));
-      const pt = pointObject(evt.lat, evt.lon, { color: '#ffffff', size: 9 });
-      out.push({ id: 'centroid', label: 'Centroide', object: pt, update(t) { pt.visible = gate(t); } });
       return out;
     },
     panel(data, evt) {
@@ -84,9 +86,10 @@ function genericModule(type) {
         if (days > 1) stats.push([String(days), 'días de evento']);
       }
       if (!data.geometry) rows.push(row('Geometría', '<small>No disponible ahora</small>'));
-      const legend = [[ALERT[evt.alert].color, AREA_LABEL[type]], ['#ffffff', 'Centroide (GDACS)']];
+      const legend = [[ALERT[evt.alert].color, AREA_LABEL[type]], ['#ffffff', 'Baliza: centroide (GDACS)']];
       return { stats, legend, rows, notes: GENERIC_NOTES[type] || [] };
     },
+    pulse(data, evt, t) { return type !== 'EQ' || t >= evt.from; },
     series() { return []; },
   };
 }
@@ -134,7 +137,7 @@ const tcModule = {
     const box = bboxOf(obs.length ? [...rings, obs] : rings);
     return box || { w: evt.lon, e: evt.lon, s: evt.lat, n: evt.lat };
   },
-  layers(data, evt) {
+  layers(data, evt, { scale = 0.1 } = {}) {
     const out = [];
     const now = Date.now();
     const past = [], current = [];
@@ -167,41 +170,34 @@ const tcModule = {
     const idxAt = (t) => { let idx = -1; past.forEach((x, i) => { if (x.date <= t) idx = i; }); return idx; };
     past.forEach((x, i) => out.push(areaLayer('past', 'Radios de viento pasados', [x.p], { color: '#9fe8ff', fill: 0.12, line: 0.85 }, (t) => idxAt(t) === i)));
 
-    // Trayectoria por avisos: observada hasta el instante simulado, previsión en discontinuo
+    // Trayectoria por avisos: tubo luminoso observado hasta el instante simulado, previsión tenue
     const track = data.track || [];
-    if (track.length) {
-      const obs = track.filter((p) => !p.forecast);
-      const fc = track.filter((p) => p.forecast);
-      const v = (p) => latLonToVec3(p.lat, p.lon, 1.0048);
-      if (obs.length) {
-        const geo = new THREE.BufferGeometry().setFromPoints(obs.map(v));
-        const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false }));
-        line.renderOrder = 5; line.frustumCulled = false;
-        const dots = new THREE.Points(new THREE.BufferGeometry().setFromPoints(obs.map(v)), new THREE.PointsMaterial({ color: 0xffffff, size: 5, sizeAttenuation: false, depthWrite: false, transparent: true }));
-        dots.renderOrder = 5; dots.frustumCulled = false;
-        const cur = pointObject(obs[0].lat, obs[0].lon, { color: '#ff5a4d', size: 12 });
-        const g = new THREE.Group(); g.add(line, dots, cur);
-        out.push({
-          id: 'track', label: 'Trayectoria', object: g,
-          update(t) {
-            let n = obs.filter((p) => p.t <= t).length;
-            line.geometry.setDrawRange(0, Math.max(n, 0));
-            dots.geometry.setDrawRange(0, Math.max(n, 0));
-            cur.visible = n > 0;
-            if (n > 0) { n -= 1; const p = obs[n]; cur.geometry.attributes.position.setXYZ(0, ...v(p).toArray()); cur.geometry.attributes.position.needsUpdate = true; }
-          },
-        });
-      }
-      if (fc.length) {
-        const from = obs.length ? [obs[obs.length - 1], ...fc] : fc;
-        const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(from.map((p) => latLonToVec3(p.lat, p.lon, 1.0048))),
-          new THREE.LineDashedMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, depthWrite: false, dashSize: 0.006, gapSize: 0.005 }));
-        line.computeLineDistances(); line.renderOrder = 5; line.frustumCulled = false;
-        out.push({ id: 'track-fc', label: 'Trayectoria', object: line, update() {} });
-      }
+    const obs = track.filter((p) => !p.forecast);
+    const fc = track.filter((p) => p.forecast);
+    const alt = scale * 0.004, radius = scale * 0.0022;
+    const tube = tubeObject(obs, { color: '#ffffff', radius, alt, opacity: 0.85 });
+    if (tube) {
+      out.push({ id: 'track', label: 'Trayectoria', object: tube, update(t) {
+        const i = obs.findIndex((p) => p.t > t);
+        const n = i < 0 ? obs.length : i === 0 ? 0 : i + (t - obs[i - 1].t) / (obs[i].t - obs[i - 1].t || 1);
+        tube.userData.setProgress(n);
+      } });
     }
+    const fcTube = tubeObject(obs.length ? [obs[obs.length - 1], ...fc] : fc, { color: '#c9b6ff', radius: radius * 0.6, alt, opacity: 0.35 });
+    if (fcTube) out.push({ id: 'track-fc', label: 'Trayectoria', object: fcTube, update() {} });
     return out;
   },
+  /** Posición del ciclón en el instante simulado (interpolada entre avisos, solo para la baliza). */
+  focus(data, evt, t) {
+    const obs = (data.track || []).filter((p) => !p.forecast);
+    if (!obs.length) return null;
+    if (t <= obs[0].t) return obs[0];
+    for (let i = 1; i < obs.length; i++) {
+      if (obs[i].t >= t) { const a = obs[i - 1], b = obs[i], f = (t - a.t) / (b.t - a.t || 1); return { lat: a.lat + (b.lat - a.lat) * f, lon: a.lon + (b.lon - a.lon) * f }; }
+    }
+    return obs[obs.length - 1];
+  },
+  pulse(data, evt, t) { const o = (data.track || []).find((p) => !p.forecast); return !o || t >= o.t; },
   panel(data, evt) {
     const rows = [];
     const sev = evt.severity;
@@ -214,7 +210,7 @@ const tcModule = {
     if (maxKmh) stats.push([Math.round(maxKmh).toLocaleString('es-ES'), 'km/h viento máx.']);
     if (last?.kmh != null) stats.push([Math.round(last.kmh).toLocaleString('es-ES'), 'km/h último aviso']);
     stats.push([String(Math.max(1, Math.ceil((Math.min(evt.to, Date.now()) - evt.from) / DAY))), 'días de evento']);
-    const legend = [['#ffffff', 'Trayectoria (aviso)'], ['#ff5a4d', 'Posición actual'], ['#5fd38d', 'Viento ≥ 60 km/h'], ['#ffb547', 'Viento ≥ 90 km/h'], ['#ff5a4d', 'Viento ≥ 120 km/h'], ['#9fe8ff', 'Radios pasados'], ['#b48cff', 'Cono de previsión']];
+    const legend = [['#ffffff', 'Trayectoria (aviso)'], ['#ff5a4d', 'Posición (baliza)'], ['#5fd38d', 'Viento ≥ 60 km/h'], ['#ffb547', 'Viento ≥ 90 km/h'], ['#ff5a4d', 'Viento ≥ 120 km/h'], ['#9fe8ff', 'Radios pasados'], ['#b48cff', 'Cono de previsión']];
     return { stats, legend, rows, notes: ['Trayectoria y viento: avisos que recoge GDACS. Entre avisos no hay datos: las líneas son solo guías.', 'Los trazos discontinuos son previsión, no observación.'] };
   },
   series(data) {
@@ -224,5 +220,13 @@ const tcModule = {
   },
 };
 
-const MODULES = { TC: tcModule, EQ: genericModule('EQ'), FL: genericModule('FL'), WF: fireModule(genericModule('WF')), VO: genericModule('VO'), DR: genericModule('DR') };
+const MODULES = {
+  EO: eonetModule,
+  TC: cycloneExtras(tcModule),
+  EQ: quakeModule(genericModule('EQ')),
+  FL: floodExtras(genericModule('FL')),
+  WF: fireExtras(fireModule(genericModule('WF'))),
+  VO: volcanoExtras(genericModule('VO')),
+  DR: genericModule('DR'),
+};
 export const getModule = (type) => MODULES[type] || genericModule(type);

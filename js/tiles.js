@@ -6,6 +6,7 @@
 // que el globo base, con sombreado de montañas según el sol y bruma con la distancia.
 import * as THREE from 'three';
 import { SHADE_PARS } from './globe.js';
+import { vec3ToLatLon } from './geo.js';
 
 const IMAGERY = (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
 const LABELS = (z, x, y) => `https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`;
@@ -16,18 +17,18 @@ const NIGHT_MIN_Z = 6; // por debajo basta la textura global
 const TERRAIN = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
 
 const MIN_Z = 5; // por debajo basta la textura base (4096 px ≈ nivel 4)
-const MAX_Z = 18;
+const MAX_Z = 19; // ~0,25 m/píxel en latitudes medias (Esri lo tiene casi en todo el mundo)
 const ELEV_MIN_Z = 3; // el relieve de nivel bajo sirve de base mientras llega el detallado
 const ELEV_MAX_Z = 13; // ~15 m/píxel: suficiente; más allá se reutiliza el padre
 const TILE_PX = 256;
-const MAX_CACHE = 320;
-const MAX_ELEV_CACHE = 200;
-const MAX_LEAVES = 190;
-const MAX_INFLIGHT = 12;
+const MAX_CACHE = 700;
+const MAX_ELEV_CACHE = 320;
+const MAX_LEAVES = 480;
+const MAX_INFLIGHT = 18;
 const SKIP = 3; // niveles que se pueden saltar de golpe al acercarse (menos descargas intermedias)
 const FADE_MS = 280;
 const MORPH_MS = 450;
-const MAX_ELEV_INFLIGHT = 6;
+const MAX_ELEV_INFLIGHT = 10;
 const D2R = Math.PI / 180;
 const R_M = 6371000;
 export const TERRAIN_EXAGGERATION = 1.6;
@@ -84,6 +85,9 @@ const fragment = /* glsl */ `
   uniform vec4 uNightXf;     // escala.xy, desplazamiento.zw: uv de la tesela → uv de la tesela de luces
   uniform float uNightOn;
   uniform float uLift;       // luz mínima en el lado nocturno (modo evento)
+  uniform float uRaw;
+  uniform vec4 uFocusBox;
+  uniform float uFocusOn;        // muy cerca del suelo: la foto con sus colores reales, sin oscurecer
   ${SHADE_PARS}
   varying vec2 vUv;
   varying vec2 vGeoUv;
@@ -98,7 +102,7 @@ const fragment = /* glsl */ `
     vec3 Nt = N;
     if (uHasElev > 0.5 && uExag > 0.0) {
       // Normal del relieve por diferencias centrales → las montañas proyectan luz y sombra
-      float d = 1.0 / 128.0;
+      float d = max(1.0 / 256.0, 1.0 / (256.0 * uElevXf.x)); // una celda de la tesela de relieve
       float hx = (elevAt(vUv + vec2(d, 0.0)) - elevAt(vUv - vec2(d, 0.0))) * uExag / ${R_M.toFixed(1)};
       float hy = (elevAt(vUv + vec2(0.0, d)) - elevAt(vUv - vec2(0.0, d))) * uExag / ${R_M.toFixed(1)};
       vec3 east = normalize(cross(vec3(0.0, 1.0, 0.0), N));
@@ -110,7 +114,15 @@ const fragment = /* glsl */ `
     vec3 day = texture2D(dayMap, iuv).rgb * 1.12;
     if (uNightOn > 0.5) gNight = vec4(texture2D(nightTile, uNightXf.zw + iuv * uNightXf.xy).rgb, 1.0);
     vec3 col = shadeEarthT(day, vGeoUv, N, Nt, V);
-    col = max(col, day * 0.4 * uLift); // de noche el terreno sigue viéndose, tenue
+    col = max(col, day * 0.9 * uLift); // modo evento: el terreno se ve aunque allí sea de noche
+    col = mix(col, day * 0.98, uRaw);
+    if (uHasElev > 0.5 && uExag > 0.0) {
+      vec3 e1 = normalize(cross(vec3(0.0, 1.0, 0.0), N));
+      vec3 n1 = cross(N, e1);
+      vec3 L = normalize(N * 0.75 - e1 * 0.45 + n1 * 0.5);
+      float hill = max(dot(Nt, L), 0.0) / max(dot(N, L), 0.05);
+      col *= clamp(mix(1.0, hill, 0.7), 0.45, 1.45);
+    }
     vec4 lab = texture2D(labelMap, iuv);
     col = mix(col, lab.rgb, lab.a * uLabels * 0.92);
     if (uDecalOn > 0.5) {
@@ -120,6 +132,13 @@ const fragment = /* glsl */ `
         float lum = dot(col, vec3(0.3, 0.59, 0.11));
         col = mix(col, d.rgb * clamp(lum * 1.7, 0.65, 1.15), d.a); // sigue la luz y la sombra del relieve
       }
+    }
+    if (uFocusOn > 0.5) {
+      vec2 fc = (uFocusBox.xy + uFocusBox.zw) * 0.5, fh = max((uFocusBox.zw - uFocusBox.xy) * 0.5, vec2(1e-6));
+      vec2 fq = abs(vGeoUv - fc) / fh;
+      float fo = smoothstep(1.15, 2.4, max(fq.x, fq.y));
+      float fl = dot(col, vec3(0.3, 0.59, 0.11));
+      col = mix(col, vec3(fl) * vec3(0.32, 0.34, 0.4), fo * 0.78);
     }
     // Bruma atmosférica con la distancia (solo cerca del suelo)
     float distKm = length(cameraPosition - vPosW) * 6371.0;
@@ -198,13 +217,15 @@ export class SatelliteTiles {
     this.fogColor = { value: new THREE.Color(0.6, 0.75, 0.95) };
     this.fog = { value: 0 };
     this.lift = { value: 0 };
+    this.raw = { value: 0 };
+    this.focus = { box: { value: new THREE.Vector4() }, on: { value: 0 } }; // modo evento: fuera de la zona, más oscuro
     this.decal = { map: { value: EMPTY }, box: { value: new THREE.Vector4() }, on: { value: 0 } };
     this.enabled = true;
     this.group = new THREE.Group();
     scene.add(this.group);
     this.loader = new THREE.TextureLoader();
     this.loader.setCrossOrigin('anonymous');
-    this.aniso = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    this.aniso = Math.min(16, renderer.capabilities.getMaxAnisotropy());
     this.frustum = new THREE.Frustum();
     this.projView = new THREE.Matrix4();
     this.lastSelect = 0;
@@ -230,6 +251,21 @@ export class SatelliteTiles {
     } else this.decal.map.value.needsUpdate = true;
     this.decal.box.value.set((box.w + 180) / 360, (box.s + 90) / 180, (box.e + 180) / 360, (box.n + 90) / 180);
     this.decal.on.value = 1;
+  }
+
+  /** ¿Es la tesela gris de relleno de Esri? (casi toda gris claro y sin color) */
+  isPlaceholder(img) {
+    try {
+      const g = this.ctx2d;
+      g.clearRect(0, 0, 16, 16);
+      g.drawImage(img, 0, 0, 16, 16);
+      const d = g.getImageData(0, 0, 16, 16).data;
+      let grey = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i] > 185 && Math.abs(d[i] - d[i + 1]) < 8 && Math.abs(d[i + 1] - d[i + 2]) < 8) grey++;
+      }
+      return grey > 200;
+    } catch { return false; }
   }
 
   setLabels(on) { this.labels.value = on ? 1 : 0; }
@@ -278,9 +314,13 @@ export class SatelliteTiles {
     const camDir = cam.position.clone().normalize();
     const horizon = Math.acos(Math.min(1, 1 / cam.position.length())) + 0.004;
     const relief = this.terrainOn ? (9000 * this.exag.value) / R_M : 0;
+    // Distancias medidas al terreno bajo la cámara, no al nivel del mar: en montaña el detalle
+    // se calculaba como si estuviéramos mucho más lejos
+    const camLL = vec3ToLatLon(cam.position);
+    const gCam = Math.min(this.terrainOn ? (this.heightAt(camLL.lat, camLL.lon) * this.exag.value) / R_M : 0, h * 0.97);
 
     let leaves = [];
-    let quality = 1.15;
+    let quality = 0.8; // cada píxel de foto ocupa menos de un píxel de pantalla: imagen nítida
     const sphere = new THREE.Sphere();
     const visit = (z, x, y) => {
       const b = this.bounds(z, x, y);
@@ -289,10 +329,10 @@ export class SatelliteTiles {
       const geoR = 2 * Math.sin(b.ang / 2) * 1.05;
       sphere.radius = geoR + 0.00002 + relief; // el margen de las montañas solo para saber si se ve
       if (!this.frustum.intersectsSphere(sphere)) return;
-      const d = Math.max(cam.position.distanceTo(b.c) - geoR, h * 0.9, 1e-5);
+      const d = Math.max(cam.position.distanceTo(b.c) - geoR - gCam, (h - gCam) * 0.9, 1e-6);
       const widthRad = ((2 * Math.PI) / 2 ** z) * Math.cos(b.latC * D2R);
       const px = (widthRad * pxPerUnit) / d;
-      const falloff = 1 + Math.max(0, d / Math.max(h, 1e-6) - 2) * 0.3;
+      const falloff = 1 + Math.max(0, d / Math.max(h - gCam, 1e-6) - 2.5) * 0.18;
       if (px > TILE_PX * quality * falloff && z < MAX_Z) {
         const n = z + 1;
         visit(n, 2 * x, 2 * y); visit(n, 2 * x + 1, 2 * y);
@@ -333,11 +373,32 @@ export class SatelliteTiles {
         continue;
       }
       const a = nearestReady(z, x, y);
-      if (a) draw.add(a);
-      const rz = Math.min(z, a ? a.z + SKIP : MIN_Z + 1);
+      // Al alejarse: si las teselas hijas (más detalladas) ya están, se siguen usando en vez del
+      // antepasado borroso hasta que llegue la nueva
+      const kids = this.coverBy(z, x, y, 2);
+      if (kids) for (const k of kids) draw.add(k);
+      else if (a) draw.add(a);
+      let rz = Math.min(z, a ? a.z + SKIP : MIN_Z + 1);
+      let key = this.key(rz, x >> (z - rz), y >> (z - rz));
+      // Una descarga fallida se reintenta (3 s, 6 s, 9 s…); mientras, se pide el nivel intermedio
+      let c = this.cache.get(key);
+      if (c?.state === 'error' && c.tries < 5 && now - c.errAt > 3000 * c.tries) { this.cache.delete(key); c = null; }
+      while (c && (c.state === 'error' || c.state === 'missing') && rz > (a ? a.z + 1 : MIN_Z)) {
+        rz--;
+        key = this.key(rz, x >> (z - rz), y >> (z - rz));
+        c = this.cache.get(key);
+      }
       const rx = x >> (z - rz), ry = y >> (z - rz);
-      const key = this.key(rz, rx, ry);
       if (!this.cache.has(key) && !wanted.has(key)) wanted.set(key, { z: rz, x: rx, y: ry, d });
+    }
+    // Sin solapes: si se dibuja una tesela y también uno de sus antepasados, las dos ocupan el mismo
+    // sitio y parpadean (z-fighting). Se quita la descendiente salvo mientras aparece con fundido.
+    for (const t of [...draw]) {
+      if (now - (t.readyAt || 0) < FADE_MS) continue;
+      for (let pz = t.z - 1, px = t.x >> 1, py = t.y >> 1; pz >= MIN_Z; pz--, px >>= 1, py >>= 1) {
+        const p = this.cache.get(this.key(pz, px, py));
+        if (p && draw.has(p)) { draw.delete(t); break; }
+      }
     }
     for (const t of [...this.cache.values()]) {
       const on = draw.has(t);
@@ -348,7 +409,7 @@ export class SatelliteTiles {
         // Nombres: solo para teselas definitivas que llevan un momento a la vista
         if (this.labels.value && t.z <= 15 && !t.labelsRequested && t.leafAt && now - t.leafAt > 400) this.loadLabels(t);
         // Luces de ciudades nítidas: solo en teselas que están de noche
-        if (t.mesh && !t.nightRequested && t.z >= NIGHT_MIN_Z && this.shared.sunDir.value.dot(_nv.copy(t.mesh.position).normalize()) < 0.3) this.loadNight(t);
+        if (t.mesh && !t.nightRequested && t.z >= NIGHT_MIN_Z && this.raw.value < 0.5 && this.shared.sunDir.value.dot(_nv.copy(t.mesh.position).normalize()) < 0.3) this.loadNight(t);
       } else {
         t.leafAt = 0;
       }
@@ -359,6 +420,7 @@ export class SatelliteTiles {
       }
     }
 
+    this.relevant = relevant; // antepasados de lo que se ve: no se borran de memoria (vuelta atrás instantánea)
     this.queue = [...wanted.values()].sort((a, b) => a.z - b.z || a.d - b.d);
     this.pump();
     this.evict();
@@ -392,6 +454,7 @@ export class SatelliteTiles {
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.anisotropy = this.aniso;
         if (this.cache.get(key) !== tile) { tex.dispose(); tex.image?.close?.(); this.pump(); return; }
+        if (z >= 18 && this.isPlaceholder(tex.image)) { tex.dispose(); tex.image?.close?.(); tile.state = 'missing'; this.pump(); return; }
         this.build(tile, tex);
         this.lastSelect = 0;
         this.pump();
@@ -399,7 +462,9 @@ export class SatelliteTiles {
         this.inflight--;
         if (e?.name === 'AbortError') { this.pump(); return; }
         tile.state = 'error';
-        if (++this.errors === 6) this.onError?.();
+        tile.errAt = performance.now();
+        tile.tries = (tile.tries || 0) + 1;
+        if (z < 18 && ++this.errors === 6) this.onError?.(); // en los niveles máximos Esri no tiene foto en todas partes: no es un fallo
         this.pump();
       });
     }
@@ -408,7 +473,7 @@ export class SatelliteTiles {
   build(tile, tex) {
     const { z, x, y } = tile;
     const b = this.bounds(z, x, y);
-    const N = z >= 9 ? 32 : z >= 7 ? 24 : 16;
+    const N = z >= 10 && z <= 15 ? 64 : z >= 9 ? 32 : z >= 7 ? 24 : 16; // malla fina donde el relieve tiene detalle
     const pos = [], nrm = [], uv = [], geo = [], skirt = [], idx = [];
     const center = b.c.clone();
     const v = new THREE.Vector3();
@@ -481,6 +546,9 @@ export class SatelliteTiles {
         uDecalBox: this.decal.box,
         uDecalOn: this.decal.on,
         uLift: this.lift,
+        uRaw: this.raw,
+        uFocusBox: this.focus.box,
+        uFocusOn: this.focus.on,
         nightMap: this.shared.nightMap,
         waterMap: this.shared.waterMap,
         sunDir: this.shared.sunDir,
@@ -492,6 +560,8 @@ export class SatelliteTiles {
       vertexShader: vertex,
       fragmentShader: fragment,
       side: THREE.DoubleSide,
+      // La tesela más detallada siempre gana en profundidad (sin parpadeo durante el fundido)
+      polygonOffset: true, polygonOffsetFactor: -0.5, polygonOffsetUnits: -2 * (z - MIN_Z),
       polygonOffset: true,
       polygonOffsetFactor: -1,
       polygonOffsetUnits: -2 * z,
@@ -579,6 +649,7 @@ export class SatelliteTiles {
   requestElev(z, x, y) {
     const key = this.key(z, x, y);
     let e = this.elev.get(key);
+    if (e?.state === 'error' && e.tries < 5 && performance.now() - e.errAt > 3000 * e.tries) { e.state = 'queued'; this.pumpElev(); } // reintento
     if (e) return e;
     e = { key, z, x, y, state: 'queued', tex: null, cpu: null, waiters: new Set(), used: performance.now() };
     this.elev.set(key, e);
@@ -602,7 +673,7 @@ export class SatelliteTiles {
         e.waiters.clear();
         this.pumpElev();
       };
-      img.onerror = () => { this.elevInflight--; e.state = 'error'; this.pumpElev(); };
+      img.onerror = () => { this.elevInflight--; e.state = 'error'; e.errAt = performance.now(); e.tries = (e.tries || 0) + 1; this.pumpElev(); };
       img.src = TERRAIN(e.z, e.x, e.y);
     }
   }
@@ -646,10 +717,25 @@ export class SatelliteTiles {
     return 0;
   }
 
+  /** Teselas ya listas (hasta `depth` niveles por debajo) que cubren entera la tesela z/x/y, o null. */
+  coverBy(z, x, y, depth) {
+    if (depth === 0 || z >= MAX_Z) return null;
+    const out = [];
+    for (let i = 0; i < 4; i++) {
+      const cz = z + 1, cx = 2 * x + (i & 1), cy = 2 * y + (i >> 1);
+      const c = this.cache.get(this.key(cz, cx, cy));
+      if (c?.state === 'ready' && c.mesh) { out.push(c); continue; }
+      const sub = this.coverBy(cz, cx, cy, depth - 1);
+      if (!sub) return null;
+      out.push(...sub);
+    }
+    return out;
+  }
+
   evict() {
     if (this.cache.size > MAX_CACHE) {
       const old = [...this.cache.values()]
-        .filter((t) => t.state !== 'loading' && !t.mesh?.visible)
+        .filter((t) => t.state !== 'loading' && !t.mesh?.visible && !this.relevant?.has(t.key))
         .sort((a, b) => a.used - b.used);
       for (const t of old.slice(0, this.cache.size - MAX_CACHE)) {
         if (t.mesh) {

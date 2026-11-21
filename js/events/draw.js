@@ -1,9 +1,10 @@
 // Dibujo de polígonos y líneas GeoJSON sobre el globo (radio 1).
 import * as THREE from 'three';
 import { latLonToVec3 } from '../geo.js';
+import { thickLine } from './fx.js';
 
-const LINE_R = 1.0045;
-const FILL_R = 1.0042;
+const LINE_R = 1.0016; // ~10 km: zonas grandes (en las pequeñas se pinta sobre el relieve)
+const FILL_R = 1.0014;
 
 /** Desenrolla las longitudes para que un anillo no salte al cruzar el antimeridiano. */
 function unwrap(ring, ref) {
@@ -26,6 +27,7 @@ export function polygonsOf(geom) {
 export function bboxOf(rings) {
   let w = 180, e = -180, s = 90, n = -90, any = false;
   for (const r of rings) {
+    if (!r.length) continue;
     for (const [lon0, lat] of unwrap(r)) {
       any = true;
       w = Math.min(w, lon0); e = Math.max(e, lon0); s = Math.min(s, lat); n = Math.max(n, lat);
@@ -34,18 +36,27 @@ export function bboxOf(rings) {
   return any ? { w, e, s, n } : null;
 }
 
-export function lineObject(ring, { color, opacity = 0.9, dashed = false, closed = true }) {
+export function lineObject(ring, { color, opacity = 0.9, dashed = false, closed = true, width = 2.5 }) {
   const pts = unwrap(ring).map(([lon, lat]) => latLonToVec3(lat, lon, LINE_R));
-  const geo = new THREE.BufferGeometry().setFromPoints(pts);
-  const mat = dashed
-    ? new THREE.LineDashedMaterial({ color, transparent: true, opacity, depthWrite: false, dashSize: 0.006, gapSize: 0.005 })
-    : new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false });
-  const line = closed ? new THREE.LineLoop(geo, mat) : new THREE.Line(geo, mat);
-  if (dashed) line.computeLineDistances();
-  line.renderOrder = 4;
-  line.frustumCulled = false;
-  return line;
+  return thickLine(pts, { color, opacity, dashed, closed, width });
 }
+
+/** Suaviza contornos escalonados (polígonos derivados de píxeles) con dos pasadas de Chaikin. */
+export function smoothRing(ring, passes = 2) {
+  let r = unwrap(ring);
+  if (r.length > 1 && r[0][0] === r[r.length - 1][0] && r[0][1] === r[r.length - 1][1]) r.pop();
+  if (r.length < 4 || r.length > 4000) return r;
+  for (let k = 0; k < passes; k++) {
+    const o = [];
+    for (let i = 0; i < r.length; i++) {
+      const [x0, y0] = r[i], [x1, y1] = r[(i + 1) % r.length];
+      o.push([0.75 * x0 + 0.25 * x1, 0.75 * y0 + 0.25 * y1], [0.25 * x0 + 0.75 * x1, 0.25 * y0 + 0.75 * y1]);
+    }
+    r = o;
+  }
+  return r;
+}
+const smoothPolys = (polys) => polys.map((p) => ({ ...p, outer: smoothRing(p.outer), holes: p.holes.map((h) => smoothRing(h)) }));
 
 /** Relleno translúcido. Solo para polígonos pequeños: en la esfera las cuerdas largas se hundirían. */
 export function fillObject({ outer, holes }, { color, opacity = 0.16, maxSpan = 8 }) {
@@ -72,14 +83,6 @@ export function fillObject({ outer, holes }, { color, opacity = 0.16, maxSpan = 
   return mesh;
 }
 
-export function pointObject(lat, lon, { color = '#ffffff', size = 9 } = {}) {
-  const geo = new THREE.BufferGeometry().setFromPoints([latLonToVec3(lat, lon, 1.005)]);
-  const p = new THREE.Points(geo, new THREE.PointsMaterial({ color, size, sizeAttenuation: false, depthWrite: false, transparent: true }));
-  p.renderOrder = 7;
-  p.frustumCulled = false;
-  return p;
-}
-
 export function disposeTree(obj) {
   obj.traverse((o) => {
     o.geometry?.dispose?.();
@@ -88,20 +91,26 @@ export function disposeTree(obj) {
 }
 
 // ---------------------------------------------------------------------------------
-// Capas de área: objeto 3D (líneas + relleno) y, para zonas pequeñas, "calcomanía"
-// pintada en las teselas del terreno (se adapta al relieve en vez de flotar encima).
+// Capas de área: objeto 3D (líneas + relleno) para zonas grandes y "calcomanía" pintada
+// en las teselas para zonas pequeñas (sigue el relieve). En ambos casos la vista añade
+// una cortina de luz 3D sobre el contorno (layer.wall).
 // ---------------------------------------------------------------------------------
 export function areaLayer(id, label, polys, style, gate = () => true) {
-  const { color, fill = 0.2, line = 0.95, dashed = false, frame = true } = style;
+  const { color, fill = 0.2, line = 0.95, dashed = false, frame = true, wall = !dashed } = style;
+  polys = smoothPolys(polys);
   const g = new THREE.Group();
   for (const p of polys) {
-    g.add(lineObject(p.outer, { color, opacity: line, dashed }));
-    if (fill > 0) { const f = fillObject(p, { color, opacity: fill * 0.8 }); if (f) g.add(f); }
+    g.add(lineObject(p.outer, { color, opacity: line, dashed, width: dashed ? 1.6 : 2.6 }));
+    if (fill > 0) { const f = fillObject(p, { color, opacity: fill * 0.7 }); if (f) g.add(f); }
   }
   const layer = {
-    id, label, object: g, visible: true,
+    id, label, object: g, visible: true, wall, color, polys,
     decal: { polys, color, fill, line, dashed, frame },
-    update(t) { layer.visible = gate(t); g.visible = layer.visible; },
+    update(t) {
+      layer.visible = gate(t);
+      g.visible = layer.visible;
+      if (layer.wallObj) layer.wallObj.visible = layer.visible;
+    },
   };
   return layer;
 }
@@ -116,16 +125,17 @@ export function decalBox(layers) {
   return box.w < -180 || box.e > 180 ? null : box;
 }
 
-/** Pinta las capas visibles en el lienzo (proyección lineal lon/lat sobre `box`). */
-export function paintDecal(canvas, box, layers, t = Date.now()) {
+/** Pinta las capas visibles en el lienzo (proyección lineal lon/lat sobre `box`): relleno suave,
+ *  halo difuminado y trazo con núcleo claro, para que se lea como luz sobre el terreno. */
+export function paintDecal(canvas, box, layers, t = Date.now(), res = 2048) {
   const lonSpan = box.e - box.w, latSpan = box.n - box.s;
-  const k = 2048 / Math.max(lonSpan, latSpan);
+  const k = res / Math.max(lonSpan, latSpan);
   const W = Math.max(64, Math.ceil(lonSpan * k)), H = Math.max(64, Math.ceil(latSpan * k));
   if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
   const g = canvas.getContext('2d');
   g.clearRect(0, 0, W, H);
   const cx = (box.w + box.e) / 2;
-  const lw = Math.max(2.5, W / 420);
+  const lw = Math.max(3, W / 480);
   const toX = (lon) => (lon + 360 * Math.round((cx - lon) / 360) - box.w) * k;
   const toY = (lat) => (box.n - lat) * k;
   for (const l of layers) {
@@ -134,18 +144,24 @@ export function paintDecal(canvas, box, layers, t = Date.now()) {
     g.beginPath();
     for (const p of polys) {
       for (const ring of [p.outer, ...p.holes]) {
-        ring.forEach(([lon, lat], i) => {
-          const x = (lon + 360 * Math.round((cx - lon) / 360) - box.w) * k;
-          const y = (box.n - lat) * k;
-          if (i) g.lineTo(x, y); else g.moveTo(x, y);
-        });
+        ring.forEach(([lon, lat], i) => { if (i) g.lineTo(toX(lon), toY(lat)); else g.moveTo(toX(lon), toY(lat)); });
         g.closePath();
       }
     }
-    if (fill > 0) { g.globalAlpha = fill; g.fillStyle = color; g.fill('evenodd'); }
-    g.globalAlpha = line; g.strokeStyle = color; g.lineWidth = lw; g.lineJoin = 'round';
+    g.lineJoin = 'round';
     g.setLineDash(dashed ? [lw * 3, lw * 2] : []);
+    if (fill > 0) { g.globalAlpha = fill * 0.75; g.fillStyle = color; g.fill('evenodd'); }
+    if (!dashed) {
+      g.save();
+      g.globalAlpha = line * 0.55; g.strokeStyle = color; g.lineWidth = lw * 4;
+      g.filter = `blur(${Math.round(lw * 2)}px)`;
+      g.stroke();
+      g.restore();
+    }
+    g.globalAlpha = line; g.strokeStyle = color; g.lineWidth = lw;
     g.stroke();
+    if (!dashed) { g.globalAlpha = line * 0.7; g.strokeStyle = '#fff6e8'; g.lineWidth = lw * 0.35; g.stroke(); }
   }
   g.globalAlpha = 1;
+  g.filter = 'none';
 }

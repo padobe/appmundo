@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { fetchJSON, escapeHtml, timeAgo } from '../net.js';
 import { polygonsOf, bboxOf, areaLayer } from './draw.js';
-import { latLonToVec3 } from '../geo.js';
+import { hotspotsObject } from './fx.js';
 
 const DAY = 86400000;
 const HOUR = 3600000;
@@ -13,14 +13,74 @@ const FIRES_DIR = new URL('../../data/fires/', import.meta.url).href;
 const PIXEL_DEG = 0.0034; // un píxel VIIRS ≈ 375 m
 
 const AGE = [
-  { max: 1, color: '#ff5a1f', label: 'Últimas 24 h' },
-  { max: 2, color: '#ffa35c', label: 'Hace 1 día' },
-  { max: 3, color: '#ffd98a', label: 'Hace 2 días' },
-  { max: Infinity, color: '#fff0c9', label: 'Hace 3 días o más' },
+  { max: 1, color: '#ffc04d', label: 'Fuego activo (últimas 24 h)' },
+  { max: 2, color: '#ff6a2a', label: 'Brasas (hace 1 día)' },
+  { max: 3, color: '#b8361f', label: 'Hace 2 días' },
+  { max: Infinity, color: '#4a1f16', label: 'Suelo quemado (3 días o más)' },
 ];
 const ageColor = (days) => AGE.find((a) => days < a.max).color;
 const CONF = { l: 'baja', n: 'nominal', h: 'alta' };
 const fmtHM = (ms) => new Date(ms).toISOString().slice(11, 16);
+const fmtDay = new Intl.DateTimeFormat('es-ES', { day: 'numeric', month: 'short', timeZone: 'UTC' });
+
+/** Manchas suaves pre-dibujadas para el mapa de calor (mucho más rápido que un gradiente por foco). */
+let SPRITES = null;
+function heatSprites() {
+  if (SPRITES) return SPRITES;
+  const make = (stops) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const g = c.getContext('2d');
+    const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    for (const [o, col] of stops) gr.addColorStop(o, col);
+    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+    return c;
+  };
+  SPRITES = {
+    scar: make([[0, 'rgba(48,18,12,0.62)'], [0.55, 'rgba(48,18,12,0.45)'], [1, 'rgba(48,18,12,0)']]),
+    coal: make([[0, 'rgba(184,54,31,0.55)'], [1, 'rgba(184,54,31,0)']]),
+    ember: make([[0, 'rgba(255,106,42,0.75)'], [0.5, 'rgba(220,60,20,0.35)'], [1, 'rgba(200,40,10,0)']]),
+    fresh: make([[0, 'rgba(255,240,190,1)'], [0.25, 'rgba(255,170,60,0.85)'], [0.6, 'rgba(255,80,20,0.35)'], [1, 'rgba(255,60,10,0)']]),
+  };
+  return SPRITES;
+}
+
+/** Centro de los focos de cada día UTC, solo del incendio principal (el grupo conectado con más
+ *  focos): mezclar fuegos separados daría flechas sin sentido. Días con al menos 3 focos. */
+function dailyCentroids(dets) {
+  const CELL = 0.03; // ~3 km
+  const key = (i, j) => i + "," + j;
+  const cells = new Map();
+  for (const d of dets) {
+    const k = key(Math.floor(d.lon / CELL), Math.floor(d.lat / CELL));
+    (cells.get(k) || cells.set(k, []).get(k)).push(d);
+  }
+  const seen = new Set();
+  let best = [];
+  for (const start of cells.keys()) {
+    if (seen.has(start)) continue;
+    const group = [], stack = [start];
+    seen.add(start);
+    while (stack.length) {
+      const k = stack.pop();
+      group.push(...cells.get(k));
+      const [i, j] = k.split(",").map(Number);
+      for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+        const n = key(i + di, j + dj);
+        if (cells.has(n) && !seen.has(n)) { seen.add(n); stack.push(n); }
+      }
+    }
+    if (group.length > best.length) best = group;
+  }
+  const by = new Map();
+  for (const d of best) {
+    const day = Math.floor(d.t / DAY) * DAY;
+    const g = by.get(day) || { day, lat: 0, lon: 0, n: 0 };
+    g.lat += d.lat; g.lon += d.lon; g.n++;
+    by.set(day, g);
+  }
+  return [...by.values()].filter((g) => g.n >= 3).sort((x, y) => x.day - y.day).map((g) => ({ day: g.day, lat: g.lat / g.n, lon: g.lon / g.n }));
+}
 
 async function loadFires(evt) {
   const res = await fetch(`${FIRES_DIR}${evt.key}.json`, { cache: 'no-store' });
@@ -50,7 +110,7 @@ async function loadPerimeters(box) {
   return { provider: null, features: [] };
 }
 
-async function loadWeather(evt) {
+export async function loadWeather(evt) {
   const q = `https://api.open-meteo.com/v1/forecast?latitude=${evt.lat.toFixed(3)}&longitude=${evt.lon.toFixed(3)}&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,wind_direction_10m&past_days=2&forecast_days=1&timezone=GMT`;
   const d = await fetchJSON(q, { timeout: 12000 });
   const h = d.hourly;
@@ -67,6 +127,7 @@ const compass = (deg) => COMPASS[Math.round(deg / 45) % 8];
 export function fireModule(base) {
   return {
     type: 'WF',
+    beacon: false, // el propio fuego marca el sitio: la baliza lo tapaba
     async loadData(evt) {
       const data = await base.loadData(evt);
       const box = base.frame(data, evt);
@@ -99,10 +160,16 @@ export function fireModule(base) {
       return { w: q(lons, 0.05) - pad, e: q(lons, 0.95) + pad, s: q(lats, 0.05) - pad, n: q(lats, 0.95) + pad };
     },
 
-    layers(data, evt) {
-      const out = base.layers(data, evt);
+    layers(data, evt, env = {}) {
+      const out = base.layers(data, evt, env);
       const area = out.find((l) => l.id === 'area');
-      if (area) area.label = 'Área quemada (GWIS vía GDACS)';
+      if (area) {
+        area.label = 'Área quemada (GWIS vía GDACS)'; area.wall = false; area.decal.color = '#ff7a45'; area.decal.fill = 0.1;
+        area.object.traverse((o) => { if (o.material?.color) o.material.color.set('#ff7a45'); if (o.isMesh) o.material.opacity = 0.08; }); // también en 3D
+      }
+
+      const glob = out.find((l) => l.id === 'global');
+      if (glob) { glob.decal.color = '#ffb08a'; glob.object.traverse((o) => { if (o.material?.color) o.material.color.set('#ffb08a'); }); }
 
       // Perímetros oficiales
       const per = data.perim;
@@ -116,45 +183,96 @@ export function fireModule(base) {
       if (dets.length) {
         const ts = dets.map((p) => p.t);
         const countAt = (t) => { let lo = 0, hi = ts.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ts[m] <= t) lo = m + 1; else hi = m; } return lo; };
+        // 3D: solo el fuego activo (últimas 24 h) brilla y parpadea; el historial va pintado en el suelo
+        const pts = hotspotsObject(dets, { tiles: env.tiles, t0: dets[0].t });
         const b = bboxOf([dets.map((p) => [p.lon, p.lat])]);
         const rect = [[b.w, b.s], [b.e, b.s], [b.e, b.n], [b.w, b.n]];
-
-        // Alternativa 3D (zonas grandes): puntos con color por antigüedad
-        const pos = new Float32Array(dets.length * 3);
-        dets.forEach((p, i) => latLonToVec3(p.lat, p.lon, 1.0048).toArray(pos, i * 3));
-        const col = new Float32Array(dets.length * 3);
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-        geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
-        const pts = new THREE.Points(geo, new THREE.PointsMaterial({ size: 4, sizeAttenuation: false, vertexColors: true, depthWrite: false }));
-        pts.renderOrder = 6; pts.frustumCulled = false;
-        const c = new THREE.Color();
-
+        const sprites = heatSprites();
         const layer = {
-          id: 'fires', label: 'Focos de calor por antigüedad', object: pts, visible: true,
+          id: 'fires', label: 'Focos de calor por antigüedad', object: pts, keep3d: true, visible: true, hotspots: pts,
+          // Mapa de calor pintado sobre el relieve: suelo quemado (antiguo) → brasas → fuego reciente
           decal: {
             polys: [{ outer: rect, holes: [] }], frame: true,
             stamp: (t) => `${countAt(t)}|${Math.floor(t / HOUR)}`,
             custom(g, { toX, toY, k }, t) {
               const n = countAt(t);
-              const s = Math.max(6, PIXEL_DEG * k);
+              const r = Math.max(5, PIXEL_DEG * k * 0.95);
               g.globalAlpha = 1;
+              g.globalCompositeOperation = 'source-over';
+              for (let i = 0; i < n; i++) g.drawImage(sprites.scar, toX(dets[i].lon) - r * 1.4, toY(dets[i].lat) - r * 1.4, r * 2.8, r * 2.8);
+              g.globalCompositeOperation = 'lighter';
               for (let i = 0; i < n; i++) {
-                g.fillStyle = ageColor((t - ts[i]) / DAY);
-                g.fillRect(toX(dets[i].lon) - s / 2, toY(dets[i].lat) - s / 2, s, s);
+                const age = (t - ts[i]) / DAY;
+                if (age > 3) continue;
+                const s = age < 1 ? sprites.fresh : age < 2 ? sprites.ember : sprites.coal;
+                const rr = r * (age < 1 ? 1.5 : 1.2);
+                g.drawImage(s, toX(dets[i].lon) - rr, toY(dets[i].lat) - rr, rr * 2, rr * 2);
               }
+              g.globalCompositeOperation = 'source-over';
             },
           },
           update(t) {
             const n = countAt(t);
             layer.visible = n > 0;
             pts.visible = n > 0;
-            geo.setDrawRange(0, n);
-            for (let i = 0; i < n; i++) { c.set(ageColor((t - ts[i]) / DAY)); col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b; }
-            geo.attributes.color.needsUpdate = true;
+            pts.userData.setTime(t);
           },
         };
         out.push(layer);
+
+        // Avance diario: centro de los focos de cada día UTC (derivado de FIRMS, solo orientativo)
+        const days = dailyCentroids(dets);
+        if (days.length >= 2) {
+          out.push({
+            id: 'spread', label: 'Avance diario', object: new THREE.Group(), visible: true,
+            decal: {
+              polys: [{ outer: rect, holes: [] }], frame: false,
+              stamp: (t) => String(days.filter((d) => d.day <= t).length),
+              custom(g, { toX, toY, k }, t) {
+                const ds = days.filter((d) => d.day <= t);
+                if (ds.length < 2) return;
+                const lw = Math.max(3, g.canvas.width / 520);
+                const P = ds.map((d) => [toX(d.lon), toY(d.lat)]);
+                g.lineCap = g.lineJoin = 'round';
+                g.setLineDash([lw * 2.5, lw * 2]);
+                g.strokeStyle = 'rgba(20,10,5,0.55)'; g.lineWidth = lw * 2.2;
+                g.beginPath(); P.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y))); g.stroke();
+                g.strokeStyle = '#ffd27a'; g.lineWidth = lw;
+                g.stroke();
+                g.setLineDash([]);
+                for (let i = 1; i < P.length; i++) {
+                  const [x0, y0] = P[i - 1], [x1, y1] = P[i];
+                  const len = Math.hypot(x1 - x0, y1 - y0);
+                  if (len < lw * 6) continue;
+                  const a = Math.atan2(y1 - y0, x1 - x0), mx = (x0 + x1) / 2, my = (y0 + y1) / 2, s = lw * 4.5;
+                  g.fillStyle = '#ff8a3d'; g.strokeStyle = 'rgba(20,10,5,0.7)'; g.lineWidth = lw * 0.6;
+                  g.beginPath();
+                  g.moveTo(mx + Math.cos(a) * s, my + Math.sin(a) * s);
+                  g.lineTo(mx + Math.cos(a + 2.5) * s, my + Math.sin(a + 2.5) * s);
+                  g.lineTo(mx + Math.cos(a - 2.5) * s, my + Math.sin(a - 2.5) * s);
+                  g.closePath(); g.fill(); g.stroke();
+                }
+                const fs = Math.max(14, g.canvas.width / 70);
+                g.font = `600 ${fs}px system-ui, sans-serif`;
+                g.textBaseline = 'middle';
+                let lx = -1e9, ly = -1e9;
+                [...ds.keys()].reverse().forEach((i) => { // del más reciente al más antiguo
+                  const d = ds[i];
+                  const [x, y] = P[i];
+                  g.fillStyle = '#fff3df'; g.beginPath(); g.arc(x, y, lw * 1.6, 0, Math.PI * 2); g.fill();
+                  if (Math.hypot(x - lx, y - ly) < fs * 2.4 && i < ds.length - 1) return; // etiquetas sin solaparse
+                  lx = x; ly = y;
+                  const label = fmtDay.format(d.day);
+                  const w = g.measureText(label).width + fs * 0.8;
+                  g.fillStyle = 'rgba(14,10,8,0.78)';
+                  g.beginPath(); g.roundRect(x + lw * 3, y - fs * 0.75, w, fs * 1.5, fs * 0.4); g.fill();
+                  g.fillStyle = '#fff3df'; g.fillText(label, x + lw * 3 + fs * 0.4, y);
+                });
+              },
+            },
+            update(t) { this.visible = days[1].day <= t; },
+          });
+        }
       }
       return out;
     },
@@ -199,7 +317,8 @@ export function fireModule(base) {
 
       notes.push('Un foco es un píxel de ~375 m con anomalía térmica (VIIRS), no una superficie quemada.');
       notes.push('Las hectáreas son las que publica GDACS (GWIS); no se calculan a partir de los focos.');
-      const legend = [...AGE.map((a) => [a.color, a.label]), ...p.legend];
+      const legend = [...AGE.map((a) => [a.color, a.label]), ['#ff7a45', 'Área quemada (GDACS)']];
+      if (dailyCentroids(dets).length >= 2) { legend.push(['#ffd27a', 'Avance diario']); notes.push('El avance diario une el centro de los focos de cada día (UTC) del foco principal: orientativo, no es el frente del fuego.'); }
       if (per?.features.length) legend.push(['#ffd24d', `Perímetro ${per.provider}`]);
       return { stats, legend, rows, notes: [...notes, ...p.notes] };
     },

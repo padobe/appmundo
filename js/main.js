@@ -31,7 +31,7 @@ import { describePlace } from './regions.js';
 
 const IS_MOBILE = matchMedia('(pointer: coarse)').matches || Math.min(innerWidth, innerHeight) < 600;
 const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
-const MIN_CLEARANCE = 0.00007; // ≈ 450 m sobre el terreno
+const MIN_CLEARANCE = 0.00003; // ≈ 190 m sobre el terreno
 const MAX_H = 9;
 const R_M = 6371000;
 
@@ -91,15 +91,20 @@ let terrainM = 0; // altura del terreno bajo la cámara (m, ya exagerada)
 const IDLE_MS = 5000;
 
 const smooth = THREE.MathUtils.smoothstep;
-const autoTilt = (h) => 0.95 * (1 - smooth(h, 0.003, 0.03));
+// Vista cenital por defecto: la inclinación solo cambia si el usuario la pide (Mayús+flechas, arrastre)
+const autoTilt = () => 0;
 const maxTilt = (h) => 1.32 * (1 - smooth(h, 0.02, 0.4));
 
 const armIdle = () => {
   clearTimeout(idleTimer);
-  idleTimer = setTimeout(() => { if (!follow && !rig.flight) controls.autoRotate = true; }, IDLE_MS);
+  idleTimer = setTimeout(() => {
+    // Solo gira sola con el globo entero a la vista: acercada, molesta
+    const h = camera.position.length() - 1;
+    if (!follow && !rig.flight && h > 1.2 && !document.body.classList.contains('event-mode')) controls.autoRotate = true;
+  }, IDLE_MS);
 };
 const stopIdle = () => { controls.autoRotate = false; clearTimeout(idleTimer); };
-controls.addEventListener('start', () => { stopIdle(); anchor = null; });
+controls.addEventListener('start', () => { stopIdle(); anchor = null; orbit.on = false; });
 controls.addEventListener('end', armIdle);
 
 const raycaster = new THREE.Raycaster();
@@ -133,7 +138,7 @@ function zoomBy(factor, x, y) {
   armIdle();
 }
 
-const interrupt = () => { tour.stop(); rig.cancel(); };
+const interrupt = () => { tour.stop(); rig.cancel(); orbit.on = false; };
 
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
@@ -145,6 +150,8 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // Inclinación: clic derecho o Ctrl/Mayús + arrastrar; en móvil, dos dedos arriba/abajo
 let tiltDrag = null;
+// Órbita cinematográfica: giro alrededor del evento aplicado solo al dibujar (se deshace al final del fotograma)
+const orbit = { on: false, axis: new THREE.Vector3(), heading: 0, q: new THREE.Quaternion(), applied: false };
 canvas.addEventListener('pointerdown', (e) => {
   interrupt();
   if (e.pointerType === 'mouse' && (e.button === 2 || (e.button === 0 && (e.ctrlKey || e.shiftKey)))) {
@@ -216,6 +223,8 @@ const rig = {
     if (this.flight) { this.flight.resolve(false); this.flight = null; }
   },
   drift(speed) { this.driftSpeed = speed; },
+  /** Órbita lenta alrededor de un eje (punto de la superficie); se para al tocar el mapa. */
+  setOrbit(on, axis) { orbit.on = on; if (axis) orbit.axis.copy(axis); },
 };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 
@@ -259,7 +268,7 @@ const clouds = new CloudsLayer(ctx);
 const sats = new SatellitesLayer(ctx);
 const aurora = new AuroraLayer(ctx);
 const wind = new WindLayer(ctx);
-const eonet = new EonetLayer(ctx);
+const eonet = new EonetLayer(ctx, { open: openEvent });
 const photo = new PhotoLayer(ctx);
 // Vista detallada de eventos (GDACS): el módulo pesado se descarga solo al abrir el primero
 let eventView = null;
@@ -360,6 +369,10 @@ function toggleVideo(force) {
 document.getElementById('btn-video').addEventListener('click', () => toggleVideo());
 document.getElementById('video-close').addEventListener('click', () => toggleVideo(false));
 
+// Caché en disco de las teselas (sw.js): las zonas ya vistas cargan al instante, también otro día
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  navigator.serviceWorker.register(new URL('../sw.js', import.meta.url)).catch((e) => console.warn('[sw]', e));
+}
 window.planeta = { camera, controls, layers, scene, tiles, time, sky, rig, tour, place, eclipses, photo, gdacs }; // depuración
 
 // --- Seguir a la ISS --------------------------------------------------------
@@ -539,7 +552,13 @@ renderer.setAnimationLoop(() => {
 
   // Terreno bajo la cámara (para no atravesar montañas)
   const sub = vec3ToLatLon(camera.position);
-  terrainM = tiles.terrainOn ? tiles.heightAt(sub.lat, sub.lon) * TERRAIN_EXAGGERATION : 0;
+  // Relieve exagerado desde lejos (se lee mejor) y a escala real cerca del suelo (sin estirar la foto)
+  if (tiles.terrainOn) {
+    // En modo evento el relieve se exagera más (sube suavemente: las montañas «crecen»)
+    const ex = ctx.reliefBoost || 1 + (TERRAIN_EXAGGERATION - 1) * smooth(camera.position.length() - 1, 0.004, 0.04);
+    tiles.exag.value += (ex - tiles.exag.value) * (ctx.reliefBoost ? 1 - Math.exp(-dt * 1.5) : 1);
+  }
+  terrainM = tiles.terrainOn ? tiles.heightAt(sub.lat, sub.lon) * tiles.exag.value : 0;
   const ground = terrainM / R_M;
 
   let h = camera.position.length() - 1;
@@ -606,11 +625,23 @@ renderer.setAnimationLoop(() => {
     anchor = null;
   }
 
+  if (orbit.on && !rig.flight) orbit.heading += dt * 0.07;
+  else if (!orbit.on) orbit.heading *= Math.exp(-dt * 2.5);
+  orbit.applied = Math.abs(orbit.heading) > 1e-4;
+  if (orbit.applied) {
+    orbit.q.setFromAxisAngle(orbit.axis, orbit.heading);
+    camera.position.applyQuaternion(orbit.q);
+    camera.quaternion.premultiply(orbit.q);
+    camera.updateMatrixWorld();
+  }
+  eventView?.afterCamera();
+
   earth.setAltitude(h);
   sky.update(dt, h);
   tiles.fog.value = (1 - smooth(h, 0.01, 0.15)) * 0.1 * ctx.fogScale;
   tiles.fogColor.value.copy(sky.horizonColor(fogColor));
-  tiles.update(innerHeight);
+  tiles.raw.value = 1 - smooth(h - ground, 0.006, 0.04); // por debajo de ~40-250 km: foto de día siempre, nítida
+  tiles.update(innerHeight * Math.min(PIXEL_RATIO, 1.75)); // píxeles reales: nitidez en pantallas de alta densidad
 
   if (composer) composer.render();
   else renderer.render(scene, camera);
@@ -626,5 +657,11 @@ renderer.setAnimationLoop(() => {
     canvas.style.cursor = hit ? 'pointer' : '';
     if (hit) ui.showTooltip(hit.html, hover.x, hover.y);
     else ui.hideTooltip();
+  }
+  // Se deshace el giro de la órbita: la lógica del siguiente fotograma parte de la cámara sin girar
+  if (orbit.applied) {
+    orbit.q.invert();
+    camera.position.applyQuaternion(orbit.q);
+    camera.quaternion.premultiply(orbit.q);
   }
 });

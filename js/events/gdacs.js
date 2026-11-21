@@ -17,6 +17,7 @@ export const ALERT = {
   Green: { label: 'Alerta verde', color: '#5fd38d', size: 0.018 },
   Orange: { label: 'Alerta naranja', color: '#ffb547', size: 0.023 },
   Red: { label: 'Alerta roja', color: '#ff5a4d', size: 0.028 },
+  None: { label: 'Sin nivel de alerta', color: '#9fb4c8', size: 0.018 }, // eventos de NASA EONET
 };
 
 /** Las fechas de GDACS vienen sin zona: son UTC. */

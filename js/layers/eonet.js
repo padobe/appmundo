@@ -25,8 +25,9 @@ export const EONET_CATS = {
 
 export function icon(cat) {
   const c = document.createElement('canvas');
-  c.width = c.height = 64;
+  c.width = c.height = 128; // el doble para pantallas de alta densidad
   const g = c.getContext('2d');
+  g.scale(2, 2);
   const col = cat.color;
   g.fillStyle = 'rgba(6,10,18,0.78)';
   g.beginPath(); g.arc(32, 32, 26, 0, Math.PI * 2); g.fill();
@@ -73,8 +74,9 @@ export class EonetLayer {
   id = 'eonet';
   name = 'NASA EONET';
 
-  constructor(ctx) {
+  constructor(ctx, { open } = {}) {
     this.ctx = ctx;
+    this.open = open;
     this.visible = true;
     this.group = new THREE.Group();
     ctx.scene.add(this.group);
@@ -155,6 +157,33 @@ export class EonetLayer {
     }
   }
 
+  /** Evento EONET con la forma que espera la vista detallada (js/events/view.js). */
+  toEvent(it) {
+    const { ev, cat } = it;
+    const points = [], polys = [];
+    for (const g of ev.geometry || []) {
+      const t = Date.parse(g.date);
+      if (g.type === 'Point' && Array.isArray(g.coordinates)) {
+        points.push({ t, lon: g.coordinates[0], lat: g.coordinates[1], mag: g.magnitudeValue ?? null, unit: g.magnitudeUnit || '' });
+      } else if (g.type === 'Polygon' && Array.isArray(g.coordinates)) {
+        polys.push({ outer: g.coordinates[0], holes: g.coordinates.slice(1) });
+      }
+    }
+    points.sort((a, b) => a.t - b.t);
+    const dates = (ev.geometry || []).map((g) => Date.parse(g.date)).filter(Number.isFinite);
+    const from = Math.min(...dates), last = Math.max(...dates);
+    const closed = ev.closed ? Date.parse(ev.closed) : NaN;
+    const srcs = (ev.sources || []).map((s) => s.url ? `<a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.id)}</a>` : escapeHtml(s.id)).join(' · ');
+    return {
+      key: 'eonet-' + ev.id, type: 'EO', alert: 'None', color: cat.color, typeLabel: cat.label,
+      name: ev.title, country: '', lat: it.lat, lon: it.lon,
+      from, to: Number.isFinite(closed) ? closed : Math.max(last, Date.now()),
+      points, polys,
+      sourceHtml: `NASA EONET${srcs ? ' · ' + srcs : ''}<small>agregador de la NASA; datos del organismo citado</small>`,
+      reportUrl: ev.link || `https://eonet.gsfc.nasa.gov/api/v3/events/${encodeURIComponent(ev.id)}`, reportLabel: 'Ficha EONET',
+    };
+  }
+
   pick(x, y, radius) {
     if (!this.group.visible) return null;
     const { camera, size } = this.ctx;
@@ -173,10 +202,12 @@ export class EonetLayer {
     const src = it.ev.sources?.[0]?.id ? ` · fuente: ${escapeHtml(it.ev.sources[0].id)}` : '';
     return {
       dist: best.dist,
+      select: this.open ? () => this.open(this.toEvent(it)) : undefined,
       html: `
         <div class="tt-kicker" style="--c:${it.cat.color}"><span class="tt-dot"></span>${escapeHtml(it.cat.label)} activo</div>
         <div class="tt-title">${escapeHtml(it.ev.title)}</div>
-        <div class="tt-meta">Último dato ${escapeHtml(timeAgo(new Date(it.date).getTime()))}${it.mag ? ` · ${escapeHtml(it.mag)}` : ''}${src}</div>`,
+        <div class="tt-meta">Último dato ${escapeHtml(timeAgo(new Date(it.date).getTime()))}${it.mag ? ` · ${escapeHtml(it.mag)}` : ''}${src}</div>
+        ${this.open ? '<div class="tt-hint">Clic para ver el evento en detalle</div>' : ''}`,
     };
   }
 }
